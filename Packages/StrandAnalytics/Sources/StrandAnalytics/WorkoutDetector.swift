@@ -605,6 +605,11 @@ public enum WorkoutDetector {
     static let stitchMinGapCoveragePct = 50.0
     /// Share of a piece's minutes at walking cadence (`gaitMinuteTicks`) that makes it a walk.
     static let stitchWalkMinuteFrac = 0.5
+    /// 2026-11-18: the most unseen time (minutes with no HR reading) a stitch may cross. An optical sensor
+    /// loses contact under a grip, which is what lifting is: on one wearer's month, three of twelve
+    /// Watch-logged lifts had a 7–9 min hole in strap HR mid-session and came back in pieces. Ten minutes
+    /// covers those, and the `stitchMaxGapS` cap keeps a long gap in wear from ever joining two pieces.
+    static let stitchMaxDropoutS = 10 * 60
 
     /// Minutes of `[start, end]` holding at least `gaitMinuteTicks` gait seconds, as a per-minute flag.
     static func walkingMinutes(start: Int, end: Int, gaitTs: [Int]) -> [Bool] {
@@ -617,11 +622,16 @@ public enum WorkoutDetector {
     /// May the rest between two non-walking pieces be bridged? Only a short gap the sensor actually saw,
     /// with no sustained walking streak in it: a walk between two pieces means the person left. A stream
     /// with no activity classes at all carries no evidence either way, so its pieces stay apart.
+    /// 2026-11-18: a gap the sensor saw too little of may still be bridged when what it missed adds up to
+    /// at most `stitchMaxDropoutS`: a grip dropout, not the strap coming off.
     static func canStitchGap(from a: Int, to b: Int, hasGaitEvidence: Bool, gaitTs: [Int], hrTs: [Int]) -> Bool {
         guard hasGaitEvidence, b - a <= stitchMaxGapS else { return false }
         guard b > a else { return true }
-        guard (hrCoveragePct(sampleTs: hrTs.filter { $0 >= a && $0 <= b }, start: a, end: b) ?? 0)
-                >= stitchMinGapCoveragePct else { return false }
+        let cover = hrCoveragePct(sampleTs: hrTs.filter { $0 >= a && $0 <= b }, start: a, end: b) ?? 0
+        if cover < stitchMinGapCoveragePct {
+            let unseenS = Double((b - a + 59) / 60 * 60) * (100.0 - cover) / 100.0
+            guard unseenS <= Double(stitchMaxDropoutS) else { return false }
+        }
         var run = 0
         for walking in walkingMinutes(start: a, end: b, gaitTs: gaitTs) {
             run = walking ? run + 1 : 0

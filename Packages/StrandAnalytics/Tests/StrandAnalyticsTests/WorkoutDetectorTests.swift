@@ -429,6 +429,50 @@ final class WorkoutDetectorTests: XCTestCase {
         XCTAssertGreaterThan(s[0].durationS, 2500)
     }
 
+    // MARK: - Grip dropouts inside a lift (2026-11-18)
+
+    /// Two halves of a lift with `holeS` of no HR and a still wrist between them, and a still-tagged step
+    /// stream so the stitch has gait evidence to judge the gap by. The wrist is still so that #148's
+    /// back-dating, which follows motion, cannot close the hole before the stitch sees it.
+    private func liftWithHole(start: Int, holeS: Int) -> (hr: [HRSample], grav: [GravitySample], steps: [StepSample]) {
+        let (hr, grav, steps) = movingDay(start: start, liftSets + [(holeS, 125)] + liftSets, gait: [])
+        let hole = (start + 2400)..<(start + 2400 + holeS)
+        return (hr.filter { !hole.contains($0.ts) },
+                grav.map { hole.contains($0.ts) ? GravitySample(ts: $0.ts, x: 0, y: 0, z: 1) : $0 }, steps)
+    }
+
+    /// The field case: an optical sensor loses contact under a grip, and an 8 min hole in HR mid-lift
+    /// split the session in two. Under `stitchMaxDropoutS` of unseen time, the halves are one session.
+    func testGripDropoutInsideALiftIsBridged() {
+        let start = 14_000_000
+        let (hr, grav, steps) = liftWithHole(start: start, holeS: 480)
+        let s = WorkoutDetector.detect(hr: hr, gravity: grav, restingHR: 60, maxHR: 190, steps: steps)
+        XCTAssertEqual(s.count, 1, "\(s.map { ($0.start - start, $0.end - start) })")
+        XCTAssertLessThanOrEqual(s[0].start, start + 150)
+        XCTAssertGreaterThanOrEqual(s[0].end, start + 2400 + 480 + 2300)
+    }
+
+    /// Past the bound it is a gap in wear, not a dropout, and the halves stay apart.
+    func testLongHoleInHRKeepsTheHalvesApart() {
+        let start = 15_000_000
+        let (hr, grav, steps) = liftWithHole(start: start, holeS: 720)
+        XCTAssertEqual(WorkoutDetector.detect(hr: hr, gravity: grav, restingHR: 60, maxHR: 190, steps: steps).count, 2)
+    }
+
+    func testCanStitchGapCountsUnseenTime() {
+        let a = 16_000_000
+        let still: [Int] = []
+        // Nothing seen for 9 minutes: a dropout.
+        XCTAssertTrue(WorkoutDetector.canStitchGap(from: a, to: a + 540, hasGaitEvidence: true, gaitTs: still, hrTs: []))
+        // Nothing seen for 11 minutes: not.
+        XCTAssertFalse(WorkoutDetector.canStitchGap(from: a, to: a + 660, hasGaitEvidence: true, gaitTs: still, hrTs: []))
+        // 15 min gap, the first 7 seen: 8 unseen minutes is still a dropout.
+        let seen = Array(stride(from: a, to: a + 420, by: 1))
+        XCTAssertTrue(WorkoutDetector.canStitchGap(from: a, to: a + 900, hasGaitEvidence: true, gaitTs: still, hrTs: seen))
+        // No gait evidence at all: never.
+        XCTAssertFalse(WorkoutDetector.canStitchGap(from: a, to: a + 540, hasGaitEvidence: false, gaitTs: still, hrTs: []))
+    }
+
     func testGaitPieces() {
         let start = 13_000_000
         // 15 walking minutes, then 20 without gait.
