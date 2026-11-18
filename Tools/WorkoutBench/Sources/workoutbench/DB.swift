@@ -51,7 +51,15 @@ struct LabelRow {
     let source: String
     /// True for a row saved from the suggestion card: its bounds and sport are the detector's own.
     var cardSaved = false
+    /// The reference device's own figures for the session, when the label file carries them.
+    var reference: ReferenceStats? = nil
     var span: Span { Span(start: startTs, end: endTs) }
+}
+
+struct ReferenceStats {
+    let avgHR: Double
+    let maxHR: Double
+    let activeKcal: Double
 }
 
 struct DayStreams {
