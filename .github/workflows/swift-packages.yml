@@ -15,6 +15,7 @@ on:
       - 'Tools/SleepBench/**'
       - 'Tools/SleepPSG/**'
       - 'Tools/Backfill/**'
+      - 'Tools/WorkoutBench/**'
       - '.github/workflows/swift-packages.yml'
       # Mirror of the note in android.yml: package tests read the ANDROID oracles to catch a one-sided
       # edit, and one reads Strand/Liquid/LiquidCore.swift. Editing only that side would otherwise skip
@@ -28,6 +29,7 @@ on:
       - 'Tools/SleepBench/**'
       - 'Tools/SleepPSG/**'
       - 'Tools/Backfill/**'
+      - 'Tools/WorkoutBench/**'
       - '.github/workflows/swift-packages.yml'
       # Mirror of the note in android.yml: package tests read the ANDROID oracles to catch a one-sided
       # edit, and one reads Strand/Liquid/LiquidCore.swift. Editing only that side would otherwise skip
@@ -73,6 +75,8 @@ jobs:
   # it — and #935 added 13 tests that no job ran. A tool whose numbers decide whether a staging change
   # lands has to keep compiling against the packages it measures, or it bitrots silently and the next
   # person to reach for it finds it broken. Backfill has no tests yet, so it is build-only.
+  # WorkoutBench is the same instrument for workout detection: it replays `WorkoutDetector` over a database
+  # copy and scores it against stored workouts, and its scoring primitives are tested without a dataset.
   #
   # SleepPSG has a second, sharper reason to be here. Its variant scores run through a knob-for-knob PORT of
   # `SleepStagerV2`, and its test suite is what proves that port still reproduces the shipped stager
@@ -87,6 +91,7 @@ jobs:
           - SleepBench
           - SleepPSG
           - Backfill
+          - WorkoutBench
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -95,7 +100,8 @@ jobs:
         run: swift build
         working-directory: Tools/${{ matrix.tool }}
 
-      # Only SleepBench has a test target; `swift test` on a package without one fails, so it is guarded.
+      # Not every tool has a test target (Backfill has none); `swift test` on a package without one
+      # fails, so it is guarded.
       - name: Test ${{ matrix.tool }}
         run: |
           if grep -q 'testTarget' Package.swift; then

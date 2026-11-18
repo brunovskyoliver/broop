@@ -82,6 +82,26 @@ final class DetectedWorkoutReconciliationTests: XCTestCase {
         XCTAssertEqual(row.zonesJSON, "{\"z1\":10}")
         XCTAssertEqual(row.steps, 900)
         XCTAssertEqual(row.source, "manual")
+        XCTAssertEqual(row.sport, "Workout", "no class named, so no sport is claimed")
+        XCTAssertNil(row.suggestedClass)
+    }
+
+    /// Save stores the sport the card showed, as a locale-stable token, and keeps the class as provenance.
+    func testConfirmedSuggestionStoresTheSuggestedSport() throws {
+        let now = Date(timeIntervalSince1970: 100_000)
+        for (token, sport) in [("walk", "Walking"), ("run", "Running"), ("strength", "Strength Training"),
+                               ("cycle", "Cycling"), ("ski", "Skiing")] {
+            let w = DetectedWorkout(startSec: 1_000, endSec: 3_000, avgBpm: 117, peakBpm: 151, durationMin: 33,
+                                    suggestedClass: token, suggestedClassConfidence: 0.6)
+            let row = try XCTUnwrap(WorkoutSource.buildRow(fromSuggestion: w, now: now))
+            XCTAssertEqual(row.sport, sport)
+            XCTAssertEqual(row.suggestedClass, token)
+            XCTAssertEqual(row.suggestedClassConfidence, 0.6)
+            XCTAssertNotNil(WorkoutSource.suggestedClassName(token), "every stored sport has a display name")
+        }
+        let unknown = DetectedWorkout(startSec: 1_000, endSec: 3_000, avgBpm: 117, peakBpm: 151, durationMin: 33,
+                                      suggestedClass: "swim")
+        XCTAssertEqual(try XCTUnwrap(WorkoutSource.buildRow(fromSuggestion: unknown, now: now)).sport, "Workout")
     }
 
     func testLegacyRowsAreRemovedFromTheirArchivedComputedOwner() async throws {

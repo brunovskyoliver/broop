@@ -223,6 +223,24 @@ swift run sleepbench --db /path/to/copy.sqlite --exclude <ts>,<ts> # after readi
 swift test                                                          # metric unit tests, no DB
 ```
 
+`Tools/WorkoutBench` is the equivalent for workout detection. It replays `WorkoutDetector` and
+`WorkoutTypeClassifier` one local calendar day at a time and scores the sessions against the workouts
+the database already holds (logged, imported, or recorded on another device), then prints detection
+volume and the summed detection funnel. Labels the strap has no HR for are listed and left out of
+recall; manual rows saved from the suggestion card are the detector's own output and are excluded
+unless `--include-card-saved` is passed.
+
+```bash
+cd Tools/WorkoutBench
+swift run workoutbench --db /path/to/copy.sqlite --age <years>     # or --hrmax <bpm>; match the app's
+swift run workoutbench --db /path/to/copy.sqlite --age <years> --list-unlabelled --funnel
+swift test                                                          # scoring unit tests, no DB
+```
+
+Pass the HRmax the app scores with (`--hrmax`, or `--age` for Tanaka), or the replay is not the app's.
+Sessions that overlap no label are a volume figure, not a false-alarm count: an unlogged walk is a
+real bout.
+
 Always pass a **copy** of the database. The harness opens it read-only, but a live app writing
 underneath a measurement makes the measurement unreproducible, which violates R3.
 

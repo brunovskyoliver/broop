@@ -86,6 +86,20 @@ enum WorkoutSource: Equatable {
         }
     }
 
+    /// The stored sport for a suggestion the wearer confirms: the same names as `suggestedClassName`, in
+    /// English and never localized, because `sport` is a storage token that cross-source dedup compares.
+    /// nil for an unrecognized token, where the caller keeps its generic sport.
+    static func suggestedClassSport(_ token: String?) -> String? {
+        switch token {
+        case "walk":     return "Walking"
+        case "run":      return "Running"
+        case "strength": return "Strength Training"
+        case "cycle":    return "Cycling"
+        case "ski":      return "Skiing"
+        default:         return nil
+        }
+    }
+
     /// Row title: for a still-"detected" bout carrying a classifier suggestion, the suggested name
     /// stands in for "Activity" (the "Detected" source badge keeps the provenance honest). Every
     /// other row — including any user-applied label — renders its stored sport unchanged.
@@ -442,11 +456,16 @@ enum WorkoutSource: Equatable {
     static func buildRow(fromSuggestion w: DetectedWorkout, now: Date = Date()) -> WorkoutRow? {
         guard let r = buildManualRowFromSpan(start: Date(timeIntervalSince1970: TimeInterval(w.startSec)),
                                              end: Date(timeIntervalSince1970: TimeInterval(w.endSec)),
-                                             sport: "Workout", avgHr: w.avgBpm, energyKcal: w.energyKcal, now: now)
+                                             sport: suggestedClassSport(w.suggestedClass) ?? "Workout",
+                                             avgHr: w.avgBpm, energyKcal: w.energyKcal, now: now)
         else { return nil }
+        // The class stays on the row as provenance: it marks a row whose sport and bounds came from the
+        // detector, which a replay must not count as an independent label. An edit clears it
+        // (`preservingCaptured`), and no screen reads it off a row whose sport is not "detected".
         return WorkoutRow(startTs: r.startTs, endTs: r.endTs, sport: r.sport, source: r.source,
                           durationS: r.durationS, energyKcal: r.energyKcal, avgHr: r.avgHr, maxHr: w.peakBpm,
-                          strain: w.strain, distanceM: nil, zonesJSON: w.zonesJSON, notes: nil, steps: w.steps)
+                          strain: w.strain, distanceM: nil, zonesJSON: w.zonesJSON, notes: nil, steps: w.steps,
+                          suggestedClass: w.suggestedClass, suggestedClassConfidence: w.suggestedClassConfidence)
     }
 
     /// Build a retroactive manual workout (source "manual", persisted under the strap deviceId by the

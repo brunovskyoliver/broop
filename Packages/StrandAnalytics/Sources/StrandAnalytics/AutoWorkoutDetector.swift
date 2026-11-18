@@ -41,9 +41,15 @@ public struct DetectedWorkout: Equatable, Sendable {
     public let strain: Double?
     public let zonesJSON: String?
     public let steps: Int?
+    /// The classifier's advisory class token ("walk"/"run"/"strength"/"cycle"/"ski") and its 0...1
+    /// confidence, nil when it declined to name one. The card shows it and Save writes its sport, so
+    /// what the wearer confirms is what is stored.
+    public let suggestedClass: String?
+    public let suggestedClassConfidence: Double?
 
     public init(startSec: Int, endSec: Int, avgBpm: Int, peakBpm: Int, durationMin: Int,
-                energyKcal: Double? = nil, strain: Double? = nil, zonesJSON: String? = nil, steps: Int? = nil) {
+                energyKcal: Double? = nil, strain: Double? = nil, zonesJSON: String? = nil, steps: Int? = nil,
+                suggestedClass: String? = nil, suggestedClassConfidence: Double? = nil) {
         self.startSec = startSec
         self.endSec = endSec
         self.avgBpm = avgBpm
@@ -53,13 +59,16 @@ public struct DetectedWorkout: Equatable, Sendable {
         self.strain = strain
         self.zonesJSON = zonesJSON
         self.steps = steps
+        self.suggestedClass = suggestedClass
+        self.suggestedClassConfidence = suggestedClassConfidence
     }
 
     /// A suggestion from one `WorkoutDetector` session.
     public init(session s: ExerciseSession, steps: Int?) {
         self.init(startSec: s.start, endSec: s.end, avgBpm: Int(s.avgHR.rounded()), peakBpm: s.peakHR,
                   durationMin: (s.end - s.start) / 60, energyKcal: s.caloriesKcal, strain: s.strain,
-                  zonesJSON: WorkoutDetector.zonesJSON(from: s.zoneTimePct), steps: steps)
+                  zonesJSON: WorkoutDetector.zonesJSON(from: s.zoneTimePct), steps: steps,
+                  suggestedClass: s.suggestedClass, suggestedClassConfidence: s.suggestedClassConfidence)
     }
 }
 

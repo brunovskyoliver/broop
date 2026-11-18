@@ -3415,7 +3415,22 @@ final class Repository: ObservableObject {
             WorkoutDetector.detect(hr: samples, gravity: gravity, restingHR: restingBpm.map(Double.init), maxHR: maxHR,
                                    age: profile.flatMap { $0.age > 0 ? $0.age : nil }, profile: profile,
                                    effortMethod: method, steps: steps)
-                .map { session in
+                .map { found in
+                    // The same advisory classifier the daily pass runs, over this session's own slice of
+                    // the streams. One row of lead-in gravity keeps the first in-window delta honest.
+                    var session = found
+                    if let features = WorkoutTypeFeatureExtractor.extract(
+                        hr: samples.filter { $0.ts >= session.start && $0.ts <= session.end },
+                        gravity: gravity.filter { $0.ts >= session.start - 2 && $0.ts <= session.end },
+                        steps: steps.filter { $0.ts >= session.start && $0.ts <= session.end },
+                        start: session.start, end: session.end,
+                        restingHR: restingBpm.map(Double.init), maxHR: session.hrmax,
+                        caloriesKcal: session.caloriesKcal) {
+                        let prediction = WorkoutTypeClassifier.classify(features)
+                        session.suggestedClass = prediction.predictedClass == .other
+                            ? nil : prediction.predictedClass.rawValue
+                        session.suggestedClassConfidence = prediction.confidence
+                    }
                     let ticks = StepsCounter.stepsInWindow(steps.filter { $0.ts >= session.start && $0.ts <= session.end })
                     let count = ticks.map { Int((Double($0) / max(profile?.stepTicksPerStep ?? 1, 0.5)).rounded()) }
                     return DetectedWorkout(session: session, steps: count.flatMap { $0 > 0 ? $0 : nil })
@@ -3427,8 +3442,9 @@ final class Repository: ObservableObject {
             detectedDismissedTokens: dismissedDetectedSpans, now: now)
     }
 
-    /// SAVE a suggested window as a manual-style "Workout" (generic sport , we don't claim a sport we
-    /// didn't classify), with the exact seconds and everything the detector computed for it. After saving,
+    /// SAVE a suggested window as a manual row with the exact seconds and everything the detector
+    /// computed for it. The sport is the one the card showed: the classifier's class when it named one,
+    /// else the generic "Workout" (we don't claim a sport we didn't classify). After saving,
     /// the screen re-queries (the new saved span now excludes this window from re-suggestion).
     @discardableResult
     func saveDetectedWorkout(_ w: DetectedWorkout) async -> Bool {

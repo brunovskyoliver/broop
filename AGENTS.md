@@ -124,7 +124,7 @@ Tools/ios.sh test      # NOOPiOSTests hosted by the iPhone app on an iOS 27 simu
 ### What each CI job covers — and the gaps
 | Workflow | Covers | Runner | Default state |
 |---|---|---|---|
-| `swift-packages.yml` | TWO jobs. `test`: `swift test` over **`Packages/**`** (WhoopProtocol, WhoopStore, StrandAnalytics, StrandImport, StrandDesign, NoopLocalAccess). `tools`: `swift build` + `swift test` over **`Tools/SleepBench`, `Tools/SleepPSG`, `Tools/Backfill`** — Backfill has no test target, so it is build-only. Path-filtered to those directories. | macos-15 | **active** |
+| `swift-packages.yml` | TWO jobs. `test`: `swift test` over **`Packages/**`** (WhoopProtocol, WhoopStore, StrandAnalytics, StrandImport, StrandDesign, NoopLocalAccess). `tools`: `swift build` + `swift test` over **`Tools/SleepBench`, `Tools/SleepPSG`, `Tools/Backfill`, `Tools/WorkoutBench`** — Backfill has no test target, so it is build-only. Path-filtered to those directories. | macos-15 | **active** |
 | `app-build.yml` | Builds `NOOPiOS` and compiles `NOOPiOSTests` (`build-for-testing`). It does **not run** them: they need an iOS 27 simulator and the runner has up to 26.5. | macos-26 | **active** — auto-runs on PRs touching its paths (`Strand/**`, `StrandTests/**`, `StrandiOS*/**`, `Packages/**`, `project.yml`). NO push trigger, so a direct commit to `main` needs a manual dispatch. |
 | `android.yml` | `assembleFullDebug` + `testFullDebugUnitTest` | ubuntu | **active**, path-filtered to `android/**` |
 | `source-hygiene.yml` | Doc comments that bind to nothing (`Tools/doc_comment_lint.py`) | ubuntu | **active** |

@@ -60,3 +60,22 @@ The harness was rerun over 42 days (08-16 → 09-26), with Tanaka HRmax and the 
 | Walks 09-22, 09-25 (manual) | all found | all found; 09-22 loses its last 15 min to an "other" piece, and two 09-25 walks 6 min apart become one |
 
 Lifts classified as strength went from 1 of 5 to 3 of 5, and each lift is now separated from its walk. Volume rose from 86 bouts (2.0 a day) to 125 (3.0 a day), with total minutes down from 3,895 to 3,638. The extra bouts are long days on foot that now come back as several pieces (08-31: one 327 min walk became six pieces). The detected-workout notification posts at most one bout per analysis pass, so this raises notification volume on such days without firing one per piece. The Android twin was left unchanged, as before.
+
+## Update 2026-11-16: a checked-in harness, and a relaxed core bar tried and withdrawn
+
+1. **The harness is now in the tree.** The replays above were run from scratch scripts that were not kept. `Tools/WorkoutBench` replays `WorkoutDetector` and the classifier per local day over a database copy and scores the sessions against stored workouts or a `--labels` file (see `docs/VALIDATION_PROTOCOL.md`).
+2. **The funnel gains `splitDropped`**: of `splitRuns`, how many yielded no session. Before, such a run read `split=1 splitKept=0 lowIntensity=0`.
+3. **Letting an elevated core qualify on `pieceElevatedFrac` (0.25) was tried and withdrawn.** The motive was synthetic: a 40 min lift with 42% of its time over the activity floor and no walk beside it returns nothing, because `gaitPieces` only runs on a bout that already qualified. The replay did not support the change.
+
+Replay: the iPhone production store copied on 2026-11-16, 31 days with motion data (2026-10-17 → 11-16), Tanaka HRmax for age 19, stored daily resting HR. Labels: five Apple Watch strength workouts (10-23, 10-24, 10-25, 10-29, 10-31); the strap has no HR for 10-25, so four are scorable.
+
+| | Shipped detector | Cores on the 0.25 bar |
+| --- | --- | --- |
+| Labelled lifts found | 4 of 4, 100% covered | 4 of 4, identical pieces |
+| Pieces per lift | 2.2 (the lift plus the walk in or out) | 2.2 |
+| Lift piece classified strength | 3 of 4 (10-24 reads other) | 3 of 4 |
+| Sessions | 124 (4.0 a day, 3,355 min) | 156 (5.0 a day, 4,065 min) |
+
+The 32 added sessions were 9–43 min stretches averaging 100–113 bpm, plus two existing walks that grew. None was a labelled session. `splitDropped` totals 25 over the 31 days on the shipped detector; those are the runs worth reading if a lift is ever reported missing.
+
+Four lifts from one person is a small set, and every one of them had a walk attached, which is the case the shipped path already handles. "Found" here means covered, not found whole: a 2026-11-18 rerun on a later copy of the same store returns each of these lifts in two or three pieces (the lift plus the walk in or out, 2.5 on average), so the 2.2 above did not reproduce exactly. A lift with no walk either side remains untested on real data. The Android twin is unchanged and has no elevated cores at all.

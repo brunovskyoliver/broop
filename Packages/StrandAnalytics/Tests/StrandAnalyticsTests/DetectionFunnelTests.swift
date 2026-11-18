@@ -153,7 +153,7 @@ final class DetectionFunnelTests: XCTestCase {
             "workout detect day=2026-08-24 hr=34137 motion=34136 restHR=59 floor=74 "
                 + "motionOK=1203 hrMissing=12 hrTooLow=1103 active=88 runs=6 bridged=4 "
                 + "longestRunS=212 meanRunS=74 "
-                + "short=4 noHR=0 lowIntensity=0 kept=0 activity=0 split=1 splitKept=2")
+                + "short=4 noHR=0 lowIntensity=0 kept=0 activity=0 split=1 splitKept=2 splitDropped=0")
     }
 
     /// The field case these two fields exist for, with the gate ORDER that makes them necessary.

@@ -340,6 +340,42 @@ final class WorkoutDetectorTests: XCTestCase {
         XCTAssertEqual(f?.splitRuns, 0)
     }
 
+    // MARK: - Split runs that yield nothing (2026-11-16)
+
+    /// Characterises a known gap rather than a goal. Ten sets of 100 s at 125 bpm with 140 s rests at
+    /// 95 bpm put 42% of the session over the activity floor, with no walk beside it and no gait data.
+    /// It fails the whole-run bar, comes back as one elevated core, and the core fails the same bar.
+    /// Relaxing that bar for cores was tried and withdrawn (see `pieceElevatedFrac`), so the session is
+    /// dropped; what this pins is that the funnel now reports it.
+    func testLoneLiftUnderTheBarIsDroppedAndTheFunnelSaysSo() {
+        let lift = Array(repeating: [(100, 125), (140, 95)], count: 10).flatMap { $0 }
+        let (hr, grav) = movingDay(start: 10_500_000, lift)
+        var f: WorkoutDetector.DetectionFunnel?
+        let sessions = WorkoutDetector.detect(hr: hr, gravity: grav, restingHR: 60, maxHR: 190,
+                                              funnel: { f = $0 })
+        XCTAssertTrue(sessions.isEmpty, "\(String(describing: f))")
+        XCTAssertEqual(f?.splitRuns, 1)
+        XCTAssertEqual(f?.splitKept, 0)
+        XCTAssertEqual(f?.splitDropped, 1)
+        XCTAssertEqual(f?.droppedLowIntensity, 0)
+    }
+
+    /// Thirty seconds over the floor every five minutes is 10% of the stretch: it forms a core (no dip
+    /// outlasts `bridgeGapS`) and the core is dropped. The funnel must say so, since `splitRuns` alone
+    /// reads the same whether the cores were kept or lost.
+    func testSparseSpikesFormACoreThatIsStillDroppedAndCounted() {
+        let spikes = Array(repeating: [(30, 125), (270, 95)], count: 8).flatMap { $0 }
+        let (hr, grav) = movingDay(start: 11_000_000, spikes)
+        var f: WorkoutDetector.DetectionFunnel?
+        let sessions = WorkoutDetector.detect(hr: hr, gravity: grav, restingHR: 60, maxHR: 190,
+                                              funnel: { f = $0 })
+        XCTAssertTrue(sessions.isEmpty, "\(String(describing: f))")
+        XCTAssertEqual(f?.splitRuns, 1)
+        XCTAssertEqual(f?.splitKept, 0)
+        XCTAssertEqual(f?.splitDropped, 1)
+        XCTAssertEqual(f?.droppedLowIntensity, 0)
+    }
+
     // MARK: - Gait tags (2026-09-26)
 
     /// `movingDay` plus a step stream that tags the listed segment indices as walk (class 1), all

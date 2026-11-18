@@ -874,7 +874,9 @@ private struct BroopActivityStartControl: View {
 }
 
 /// Auto-detected workout suggestions, one card per open session from the last two days: Save creates the
-/// workout, Not a workout dismisses it for good.
+/// workout, Not a workout dismisses it for good. The header names the activity the classifier suggests
+/// (which is the sport Save stores) and the day; the sentence below carries the times only, so the day
+/// is stated once.
 struct BroopActivityDetectedCard: View {
     @EnvironmentObject private var repo: Repository
     @AppStorage(PuffinExperiment.autoDetectWorkoutsKey) private var enabled = true
@@ -896,8 +898,10 @@ struct BroopActivityDetectedCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 Image(systemName: "sparkles").foregroundStyle(Color(broopHex: 0x8B6CF0))
-                BroopCaps(String(localized: "Looks like a workout"), size: 11)
+                BroopCaps(WorkoutSource.suggestedClassName(w.suggestedClass) ?? String(localized: "Looks like a workout"),
+                          size: 11)
                 Spacer()
+                BroopCaps(Self.dayStamp(w.startSec), size: 11, color: BroopPalette.textSecondary)
             }
             Text(verbatim: prompt(w))
                 .font(BroopType.medium(15))
@@ -918,20 +922,20 @@ struct BroopActivityDetectedCard: View {
         )
     }
 
+    /// The day a session started, always with its date: the list's own label, plus the date where that
+    /// label is only "Today" or "Yesterday".
+    static func dayStamp(_ startSec: Int, calendar: Calendar = .current) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(startSec))
+        let label = BroopActivityFormat.dayLabel(startSec)
+        guard calendar.isDateInToday(date) || calendar.isDateInYesterday(date) else { return label }
+        return label + " · " + date.formatted(.dateTime.day().month(.abbreviated))
+    }
+
     private func prompt(_ w: DetectedWorkout) -> String {
-        let startDate = Date(timeIntervalSince1970: TimeInterval(w.startSec))
         let fmt = AppClock.hourMinuteFormatter()
-        let start = fmt.string(from: startDate)
+        let start = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(w.startSec)))
         let end = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(w.endSec)))
-        let cal = Calendar.current
-        if cal.isDateInToday(startDate) {
-            return String(localized: "Looks like a workout around \(start)-\(end) (avg HR \(w.avgBpm), \(w.durationMin) min). Save it?")
-        }
-        if cal.isDateInYesterday(startDate) {
-            return String(localized: "Looks like a workout yesterday around \(start)-\(end) (avg HR \(w.avgBpm), \(w.durationMin) min). Save it?")
-        }
-        let day = startDate.formatted(date: .abbreviated, time: .omitted)
-        return String(localized: "Looks like a workout on \(day) around \(start)-\(end) (avg HR \(w.avgBpm), \(w.durationMin) min). Save it?")
+        return String(localized: "Looks like a workout around \(start)-\(end) (avg HR \(w.avgBpm), \(w.durationMin) min). Save it?")
     }
 
     private func save(_ w: DetectedWorkout) {

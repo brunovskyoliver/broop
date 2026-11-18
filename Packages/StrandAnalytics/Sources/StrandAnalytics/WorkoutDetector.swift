@@ -295,6 +295,10 @@ public enum WorkoutDetector {
         /// Of `kept`, how many sessions came from those cores. Keeps the accounting exact: every bridged
         /// run is one of short / noHR / lowIntensity / split / (kept − splitKept).
         public var splitKept = 0
+        /// Of `splitRuns`, how many yielded no session at all: every core or piece failed its own bar.
+        /// Without it such a run is invisible, because it is counted under `splitRuns` and never under
+        /// `droppedLowIntensity`, so a lift lost this way read `split=1 splitKept=0 lowIntensity=0`.
+        public var splitDropped = 0
 
         public init() {}
 
@@ -322,6 +326,7 @@ public enum WorkoutDetector {
             keptActivity = try c.decodeIfPresent(Int.self, forKey: .keptActivity) ?? 0
             splitRuns = try c.decodeIfPresent(Int.self, forKey: .splitRuns) ?? 0
             splitKept = try c.decodeIfPresent(Int.self, forKey: .splitKept) ?? 0
+            splitDropped = try c.decodeIfPresent(Int.self, forKey: .splitDropped) ?? 0
         }
     }
 
@@ -336,7 +341,8 @@ public enum WorkoutDetector {
             + "active=\(f.active) runs=\(f.runs) bridged=\(f.bridged) "
             + "longestRunS=\(f.longestRunS) meanRunS=\(f.meanRunS) "
             + "short=\(f.droppedShort) noHR=\(f.droppedNoHR) lowIntensity=\(f.droppedLowIntensity) "
-            + "kept=\(f.kept) activity=\(f.keptActivity) split=\(f.splitRuns) splitKept=\(f.splitKept)"
+            + "kept=\(f.kept) activity=\(f.keptActivity) split=\(f.splitRuns) splitKept=\(f.splitKept) "
+            + "splitDropped=\(f.splitDropped)"
     }
 
     /// #1545: how much of `[start, end]` the HR sensor actually covered, as a percentage of
@@ -528,6 +534,12 @@ public enum WorkoutDetector {
     /// Activity-tier bar for a piece `gaitPieces` cut from a bout that already qualified: half of
     /// `activityElevatedFrac`. A lift's sets and rests leave about 40% of its HR over the activity floor
     /// (09-20: 42%), while the sitting beside it reads near 0%.
+    ///
+    /// An elevated core does NOT get this bar. That was tried on 2026-11-16 and withdrawn: over 31 real
+    /// days it changed nothing on the four labelled lifts (each already fully covered, though in two or
+    /// three pieces with the walk in or out) and added 32
+    /// sessions of everyday movement at 100–113 bpm. A lift with no qualifying walk beside it and under
+    /// half its HR over the floor is therefore still dropped; `splitDropped` counts it.
     static let pieceElevatedFrac = 0.25
     /// A minute counts as walking when at least this many of its seconds carry a gait tag.
     static let gaitMinuteTicks = 45
@@ -782,12 +794,16 @@ public enum WorkoutDetector {
         // and its walking streaks (`gaitSplit`, see `gaitPieces`). A bridged run may try both; each split
         // clears its own flag on what it queues, so nothing splits the same way twice. Only a bridged run
         // (both flags) is counted in the funnel's drop counters, back-dated, or moves `prevRunEnd`.
-        var queue = runs.map { (start: $0.0, end: $0.1, coreSplit: true, gaitSplit: true) }
+        // `root` is the index of the bridged run an entry descends from, so a split run whose cores and
+        // pieces all fail can be reported (`splitDropped`) instead of vanishing from the funnel.
+        var queue = runs.enumerated().map { (start: $1.0, end: $1.1, coreSplit: true, gaitSplit: true, root: $0) }
+        var splitRoots = Set<Int>()
+        var keptRoots = Set<Int>()
         let gaitSorted = gaitTs.sorted()
         var qi = 0
         var prevRunEnd = Int.min
         while qi < queue.count {
-            let (start, end, coreSplit, gaitSplit) = queue[qi]
+            let (start, end, coreSplit, gaitSplit, root) = queue[qi]
             let isRun = coreSplit && gaitSplit
             qi += 1
             let backdateFloor = prevRunEnd
@@ -842,8 +858,9 @@ public enum WorkoutDetector {
                             let cores = elevatedCores(core, floor: restHR + activityHRRFraction * (m - restHR))
                             if cores.contains(where: { Double($0.1 - $0.0) >= activityMinMin * 60.0 - motionSmoothS }) {
                                 if isRun { f.splitRuns += 1 }
+                                splitRoots.insert(root)
                                 queue.insert(contentsOf: cores.map { (start: $0.0, end: $0.1, coreSplit: false,
-                                                                      gaitSplit: gaitSplit) }, at: qi)
+                                                                      gaitSplit: gaitSplit, root: root) }, at: qi)
                                 continue
                             }
                         }
@@ -863,7 +880,9 @@ public enum WorkoutDetector {
                 return (2...5).reduce(0.0) { $0 + (z[$1] ?? 0.0) } / 100.0 < minIntensityZ2Plus
             }) {
                 if isRun { f.splitRuns += 1 }
-                queue.insert(contentsOf: pieces.map { (start: $0.0, end: $0.1, coreSplit: coreSplit, gaitSplit: false) },
+                splitRoots.insert(root)
+                queue.insert(contentsOf: pieces.map { (start: $0.0, end: $0.1, coreSplit: coreSplit, gaitSplit: false,
+                                                       root: root) },
                              at: qi)
                 continue
             }
@@ -875,8 +894,10 @@ public enum WorkoutDetector {
             let effStart = isRun ? max(Self.backdatedStart(start, motionTs, smooth), backdateFloor) : start
             guard let session = makeSession(effStart, end, isActivityTier) else { f.droppedNoHR += 1; continue }
             sessions.append(session)
+            keptRoots.insert(root)
             if !isRun { f.splitKept += 1 }
         }
+        f.splitDropped = splitRoots.subtracting(keptRoots).count
         // Rejoin pieces of one session that a low-HR rest split apart. Sustained walks stay out: a walk
         // piece is never a side of a join, and a walking streak in the gap blocks it.
         func isWalk(_ w: ExerciseSession) -> Bool {
