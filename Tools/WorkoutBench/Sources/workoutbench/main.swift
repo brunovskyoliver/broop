@@ -121,6 +121,8 @@ struct Session {
     var scores: [CoarseWorkoutClass: Double] = [:]
     var rest: Double? = nil
     var features: WorkoutClassFeatures? = nil
+    var verdict: WorkoutAutoSave.Verdict = .suggest
+    var saved: Bool { if case .save = verdict { return true } else { return false } }
     var detected: DetectedSpan { DetectedSpan(span: Span(start: s.start, end: s.end), suggestedClass: cls) }
 }
 var sessions: [Session] = []
@@ -156,17 +158,17 @@ while Int(dayStart.timeIntervalSince1970) <= lastTs {
     for s in found {
         var cls: String?, conf: Double?, scores: [CoarseWorkoutClass: Double] = [:]
         var feats: WorkoutClassFeatures?
-        if let feat = WorkoutTypeFeatureExtractor.extract(hr: st.hr, gravity: st.grav, steps: st.steps,
-                                                          start: s.start, end: s.end, restingHR: rest,
-                                                          maxHR: s.hrmax, caloriesKcal: s.caloriesKcal) {
-            let p = WorkoutTypeClassifier.classify(feat)
+        // The app's own classification and auto-save verdict, so the replay is the app's.
+        let (feat, pred) = WorkoutAutoSave.classify(s, hr: st.hr, gravity: st.grav, steps: st.steps, restingHR: rest)
+        if let p = pred {
             cls = p.predictedClass == .other ? nil : p.predictedClass.rawValue
             conf = p.confidence
             scores = p.scores
             feats = feat
         }
         sessions.append(Session(day: key, s: s, cls: cls, conf: conf, scores: scores, rest: rest ?? funnel?.restingHR,
-                                features: feats))
+                                features: feats,
+                                verdict: WorkoutAutoSave.verdict(session: s, features: feat, prediction: pred)))
     }
 }
 
@@ -237,7 +239,7 @@ for (l, cover) in scorable {
     let fam = SportFamily.of(sport: l.sport)
     scored.append(Scored(label: l, family: fam, score: sc))
     let pieces = sessions.filter { $0.detected.span.overlap(l.span) > 0 }
-        .map { "\(hm($0.s.start))-\(hm($0.s.end)) \($0.cls ?? "other")\($0.s.isActivityTier ? "" : "*")" }
+        .map { "\(hm($0.s.start))-\(hm($0.s.end)) \($0.cls ?? "other")\($0.s.isActivityTier ? "" : "*")\($0.saved ? " SAVE" : "")" }
         .joined(separator: ", ")
     print("  \(dayKey.string(from: date(l.startTs))) \(hm(l.startTs))-\(hm(l.endTs))  \(pad(l.sport, 22)) "
           + "\(pad(fam.rawValue, 8)) hr=\(Int(cover))%  covered=\(Int((sc.coveredFrac * 100).rounded()))% "
@@ -262,7 +264,7 @@ for (l, cover) in scorable {
     }
 }
 if !scored.isEmpty {
-    print("  (* = cleared the zone-2 workout bar; unmarked = activity tier)")
+    print("  (* = cleared the zone-2 workout bar; unmarked = activity tier; SAVE = auto-saved by WorkoutAutoSave)")
     print("\n  family     n  found  meanCover  meanPieces  classMatch")
     for fam in SportFamily.allCases {
         let rows = scored.filter { $0.family == fam }
@@ -285,6 +287,19 @@ if !mainErrors.isEmpty {
     print(String(format: "\n  main session: mean |start err| %.1f min, mean |end err| %.1f min, both within 5 min: %d/%d",
                  ms, me, within, mainErrors.count))
 }
+do {
+    // Auto-save: one saved session per label is the goal. A label with two saved pieces is a duplicate
+    // the wearer has to clean up; a saved session over no label is a workout they did not log.
+    let savedPerLabel = scored.map { sc in sessions.filter { $0.saved && $0.detected.span.overlap(sc.label.span) > 0 }.count }
+    let savedFree = sessions.filter { s in s.saved && !candidates.contains { $0.span.overlap(s.detected.span) > 0 } }
+    print("\n  auto-save: \(sessions.filter(\.saved).count) sessions saved; labels with exactly one saved session "
+          + "\(savedPerLabel.filter { $0 == 1 }.count)/\(scored.count), with two or more "
+          + "\(savedPerLabel.filter { $0 > 1 }.count); saved over no label \(savedFree.count)")
+    for s in savedFree {
+        print("    \(s.day) \(hm(s.s.start))-\(hm(s.s.end))  \((s.s.end - s.s.start) / 60)m avg=\(Int(s.s.avgHR.rounded())) "
+              + "peak=\(s.s.peakHR) \(s.cls ?? "other")")
+    }
+}
 if !uncovered.isEmpty {
     print("\n  Not scorable (strap HR covers under half the label):")
     for (l, cover) in uncovered {
@@ -305,7 +320,7 @@ print("  by suggested class: " + byClass.sorted { $0.key < $1.key }.map { "\($0.
 if a.listUnlabelled {
     for s in sessions where !candidates.contains(where: { $0.span.overlap(s.detected.span) > 0 }) {
         print("  \(s.day) \(hm(s.s.start))-\(hm(s.s.end))  \(pad("\((s.s.end - s.s.start) / 60)m", 5)) "
-              + "avg=\(Int(s.s.avgHR.rounded())) peak=\(s.s.peakHR) \(s.s.isActivityTier ? "activity" : "workout ") "
+              + "avg=\(Int(s.s.avgHR.rounded())) peak=\(s.s.peakHR) \(s.s.isActivityTier ? "activity" : "workout ")\(s.saved ? " SAVE" : "") "
               + "\(s.cls ?? "other") \(s.conf.map { String(format: "%.2f", $0) } ?? "")")
     }
 }
@@ -316,7 +331,7 @@ print("  " + funnelTotals.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
 if let path = a.csv {
     var out = "day,start,end,durationMin,avgHR,peakHR,tier,suggestedClass,confidence,labelSport,"
         + "hrCoveragePct,avgHRRPct,restHR,strengthScore,walkScore,runScore,cycleScore,labelOverlapMin,"
-        + "hrCV,motionVariance,stillFraction,walkFraction,gaitStreakSec,tickCoverage,kcalPerMin\n"
+        + "hrCV,motionVariance,stillFraction,walkFraction,gaitStreakSec,tickCoverage,kcalPerMin,autoSave\n"
     for s in sessions {
         let label = candidates.first { $0.span.overlap(s.detected.span) > 0 }?.sport ?? ""
         out += "\(s.day),\(s.s.start),\(s.s.end),\((s.s.end - s.s.start) / 60),\(Int(s.s.avgHR.rounded())),"
@@ -329,7 +344,7 @@ if let path = a.csv {
             + (s.features.map { f in
                 [f.hrCV, f.motionVariance, f.stillFraction, f.walkFraction, f.gaitStreakSec, f.tickCoverage, f.kcalPerMin ?? 0]
                     .map { String(format: "%.3f", $0) }.joined(separator: ",") } ?? ",,,,,,")
-            + "\n"
+            + ",\(s.saved ? 1 : 0)\n"
     }
     try out.write(toFile: path, atomically: true, encoding: .utf8)
     print("\nwrote \(sessions.count) sessions to \(path)")
