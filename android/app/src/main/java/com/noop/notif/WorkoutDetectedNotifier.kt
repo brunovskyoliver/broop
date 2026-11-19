@@ -13,36 +13,31 @@ import androidx.core.app.NotificationManagerCompat
 import com.noop.NoopApplication
 import com.noop.R
 import com.noop.data.WhoopRepository
+import com.noop.analytics.WorkoutAutoSave
+import com.noop.ui.AutoWorkoutPrefs
 import com.noop.ui.NoopPrefs
+import com.noop.ui.WorkoutAutoDetect
+import com.noop.ui.WorkoutEditing
 import com.noop.ui.NoopRouteBus
 import com.noop.ui.WorkoutDetectedRoute
 import com.noop.ui.appLaunchIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-// MARK: - Detected-workout notification (2026-09-21)
+// MARK: - Detected-workout notifications
 //
-// A single opt-in, default-OFF FYI: after an analysis pass persists `sport="detected"` bouts
-// (IntelligenceEngine re-derives them every run), post one local notification for the newest
-// detected bout whose end is at least [WorkoutDetectedPolicy.NOTIFY_SETTLE_SEC] old. The row is
-// already saved — the notification is informational, with Edit / "Not a workout" actions so the
-// user can relabel or durably dismiss it. WHOOP auto-saves detected "Activity" rows the same way;
-// the wording below is NOOP's own.
+// 2026-11-18, twin of the iOS revival: after every analysis pass, [WorkoutDetectedNotifier.onAnalysisPass]
+// runs the auto-save ([com.noop.ui.WorkoutAutoDetect.runAutoSave]) and then posts one notification per
+// workout that pass saved ("Workout saved", Delete) and at most one for the newest open suggestion of
+// [WorkoutAutoSave.minDurationS] or longer not yet announced ("Looks like a workout", Save / Not a
+// workout). Posting is gated on the `workoutDetectedNotify` toggle (default ON) and on the system
+// notification permission; the auto-save is not. The legacy Edit / "Not a workout" actions stay for
+// notifications posted by older builds.
 //
-// Battery contract: this adds NO work of its own — no alarm, no BLE, no sensor reads. The check
-// rides the existing analyze cadence (post-offload pass + the 15-min tick): when the preference is
-// OFF it costs one SharedPreferences read per call; when ON it adds two bounded workouts reads over
-// a 36-hour window.
-//
-// Dedup is by SPAN OVERLAP, not exact tokens: the engine's re-detect can drift a bout's startTs by
-// minutes between passes, so the persisted "startTs:endTs" set is consulted the same way the
-// dismissed-detected table is (WhoopDao read-time overlap filter). Once a span is settled, every
-// overlapping re-derive stays silent — and every eligible token from the pass is marked, so the
-// same pass can never trickle out extra notifications on later passes.
-//
-// Swift twin: Strand/System/WorkoutDetectedNotifier.swift (same constants, same semantics).
+// Swift twin: Strand/System/WorkoutDetectedNotifier.swift (same constants, same copy).
 
 /** Pure, JVM-testable policy + copy for the detected-workout notification — no Android types, so
  *  the decision logic is pinned by WorkoutDetectedPolicyTest independently of the plumbing. */
@@ -169,7 +164,17 @@ object WorkoutDetectedPolicy {
         else -> null
     }
 
-    /** Title + full body. The frame tells the user the row is already saved, so the tap reads as
+    /** "Workout saved" copy for a session the auto-save stored. Swift twin `savedCopy`. */
+    fun savedCopy(c: Candidate, sport: String): Pair<String, String> =
+        "Workout saved" to "$sport · " + metricsText(c) + ". Detected from your strap — delete it if it was not a workout."
+
+    /** "Looks like a workout" copy for an open suggestion. Swift twin `suggestedCopy`. */
+    fun suggestedCopy(c: Candidate): Pair<String, String> {
+        val label = classLabel(c.suggestedClass) ?: return "Looks like a workout" to metricsText(c) + ". Save it?"
+        return "Looks like a workout" to metricsText(c) + " — looks like $label. Save it?"
+    }
+
+    /** Legacy title + full body, for a persisted detected row. The frame tells the user the row is already saved, so the tap reads as
      *  review, not approval. When the bout carried a classifier suggestion the body names it —
      *  hedged ("looks like") because it is an advisory guess, not a measured fact. */
     fun copy(c: Candidate): Pair<String, String> {
@@ -195,16 +200,16 @@ object WorkoutDetectedNotifier {
     const val EXTRA_EDIT = "com.noop.workoutDetected.edit"
     const val EXTRA_NOTIF_ID = "com.noop.workoutDetected.notifId"
 
+    /** 2026-11-18 actions: Delete on a saved workout, Save / "Not a workout" on a suggestion. */
+    const val ACTION_DELETE = "com.noop.workoutDetected.DELETE"
+    const val ACTION_SAVE = "com.noop.workoutDetected.SAVE"
+    const val ACTION_NOT_WORKOUT = "com.noop.workoutDetected.NOT_WORKOUT"
+
     /**
-     * Post-pass eligibility check. Called after every analysis-pass boundary — real passes and
-     * fingerprint-skipped ticks alike — because a bout's 600 s settle window can elapse during
-     * quiet ticks with no new data. One notification per call at most; safe to call from any pass
-     * because the settled-token set dedupes across process death.
-     *
-     * Reads the same union sources the Workouts list merges (detected under "<id>-noop", real
-     * sessions under the raw ids) plus the dismissed marker table, so a bout is notified exactly as
-     * the user will see it, and a dismissed or later-imported-overlapping row can never fire. When
-     * the preference is OFF the whole thing is one bool read.
+     * Post-pass hook, called after every analysis-pass boundary, including fingerprint-skipped ticks: a
+     * session becomes due for saving once it has been over for [WorkoutDetector.stitchMaxGapS], which can
+     * elapse during a quiet tick. The detection is cached per day, so a quiet tick re-detects only the day
+     * whose streams changed.
      */
     suspend fun onAnalysisPass(
         context: Context,
@@ -212,46 +217,36 @@ object WorkoutDetectedNotifier {
         strapDeviceId: String,
         trace: ((String) -> Unit)? = null,
     ) {
+        val days = runCatching { repository.recentDaysMergedFlow(strapDeviceId).first() }.getOrDefault(emptyList())
+        val (saved, open) = WorkoutAutoDetect.runAutoSave(context, repository, strapDeviceId, days)
+        for (row in saved) trace?.invoke("workout autosave start=${row.startTs} dur=${(row.endTs - row.startTs) / 60}m " +
+            "class=${row.suggestedClass ?: "-"} avg=${row.avgHr ?: "-"} peak=${row.maxHr ?: "-"}")
         if (!NoopPrefs.workoutDetectedNotifyEnabled(context)) return
         if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
 
         val now = System.currentTimeMillis() / 1000L
-        val from = now - WorkoutDetectedPolicy.CANDIDATE_WINDOW_SEC
-        val detected = runCatching {
-            repository.detectedWorkoutsUnion(strapDeviceId, from, now)
-        }.getOrDefault(emptyList())
-        if (detected.isEmpty()) return
-        val candidates = detected.map {
-            WorkoutDetectedPolicy.Candidate(it.startTs, it.endTs, it.avgHr, it.maxHr,
-                                            it.suggestedClass)
-        }
-        val realSpans = runCatching {
-            repository.workoutsUnion(strapDeviceId, from, now)
-        }.getOrDefault(emptyList())
-            .map { it.startTs to it.endTs }
-        val dismissedSpans = runCatching { repository.dismissedDetected(strapDeviceId) }
-            .getOrDefault(emptyList())
-            .map { it.startTs to it.endTs }
-        val settledSpans = WorkoutDetectedPolicy.parseSpans(
-            NoopPrefs.workoutDetectedSettledTokens(context))
-
+        val settled = NoopPrefs.workoutDetectedSettledTokens(context)
+        val suggestions = open.filter { it.endSec - it.startSec >= WorkoutAutoSave.minDurationS }
+            .map { WorkoutDetectedPolicy.Candidate(it.startSec, it.endSec, it.avgBpm, it.peakBpm, it.suggestedClass) }
         val decision = WorkoutDetectedPolicy.decide(
-            nowSec = now, candidates = candidates, realSpans = realSpans,
-            dismissedSpans = dismissedSpans, settledSpans = settledSpans)
-        val bout = decision.notify ?: return
+            nowSec = now, candidates = suggestions, realSpans = emptyList(), dismissedSpans = emptyList(),
+            settledSpans = WorkoutDetectedPolicy.parseSpans(settled))
 
-        runCatching {
-            post(context, bout)
-            // Mark settled only after a successful post (StrainTarget idiom): a suppressed or
-            // denied delivery still gets its chance once notifications are usable again.
-            val tokens = NoopPrefs.workoutDetectedSettledTokens(context) + decision.settledTokens
-            NoopPrefs.setWorkoutDetectedSettledTokens(
-                context, WorkoutDetectedPolicy.prunedTokens(tokens, now))
-            trace?.invoke(
-                com.noop.analytics.WorkoutsTrace.detectedNotifyLine(
-                    durMin = ((bout.endTs - bout.startTs) / 60L).toInt(),
-                    settledCount = decision.settledTokens.size))
+        for (row in saved) runCatching {
+            val c = WorkoutDetectedPolicy.Candidate(row.startTs, row.endTs, row.avgHr, row.maxHr, row.suggestedClass)
+            val (title, body) = WorkoutDetectedPolicy.savedCopy(c, WorkoutEditing.displaySport(row.sport))
+            post(context, row.startTs, row.endTs, title, body, saved = true)
         }
+        val bout = decision.notify
+        if (bout != null) runCatching {
+            val (title, body) = WorkoutDetectedPolicy.suggestedCopy(bout)
+            post(context, bout.startTs, bout.endTs, title, body, saved = false)
+            // Mark settled only after a successful post: a failed delivery keeps its chance next pass.
+            NoopPrefs.setWorkoutDetectedSettledTokens(
+                context, WorkoutDetectedPolicy.prunedTokens(settled + decision.settledTokens, now))
+        }
+        trace?.invoke("workout notify saved=${saved.size} suggested=${if (bout == null) 0 else 1} " +
+            "settled=${decision.settledTokens.size}")
     }
 
     /** Tap intent: open the app on the Workouts screen focused on this span (detail). */
@@ -279,42 +274,41 @@ object WorkoutDetectedNotifier {
             putExtra(EXTRA_NOTIF_ID, NOTIF_ID)
         }
 
+    private fun actionIntent(context: Context, action: String, startTs: Long, endTs: Long): Intent =
+        Intent(context, WorkoutDetectedActionReceiver::class.java).apply {
+            this.action = action
+            putExtra(EXTRA_START_TS, startTs)
+            putExtra(EXTRA_END_TS, endTs)
+            putExtra(EXTRA_NOTIF_ID, NOTIF_ID)
+        }
+
     @SuppressLint("MissingPermission") // guarded by areNotificationsEnabled() + runCatching
-    private fun post(context: Context, bout: WorkoutDetectedPolicy.Candidate) {
+    private fun post(context: Context, startTs: Long, endTs: Long, title: String, body: String, saved: Boolean) {
         ensureChannel(context)
-        val (title, body) = WorkoutDetectedPolicy.copy(bout)
-        // Distinct requestCodes per action+span so PendingIntent extras can never collide/reuse a
-        // stale intent; FLAG_UPDATE_CURRENT keeps the latest span if a re-post lands.
-        val open = PendingIntent.getActivity(
-            context, 40,
-            openIntent(context, bout.startTs, bout.endTs),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val edit = PendingIntent.getActivity(
-            context, 41,
-            editIntent(context, bout.startTs, bout.endTs),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val dismiss = PendingIntent.getBroadcast(
-            context, 42,
-            dismissIntent(context, bout.startTs, bout.endTs),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val n = NotificationCompat.Builder(context, CHANNEL_ID)
+        // Distinct requestCodes per action AND span, so two notifications never share a PendingIntent.
+        val code = (startTs % 100_000L).toInt() * 8
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val open = PendingIntent.getActivity(context, code, openIntent(context, startTs, endTs), flags)
+        val b = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_heart)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(open)
-            .addAction(0, context.getString(R.string.workout_detected_action_edit), edit)
-            .addAction(0, context.getString(R.string.workout_detected_action_dismiss), dismiss)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .build()
-        // A stable tag per bout means a re-post for the same span replaces rather than stacks.
-        NotificationManagerCompat.from(context).notify(
-            "workout.detected.${bout.startTs}", NOTIF_ID, n)
+        if (saved) {
+            b.addAction(0, context.getString(R.string.workout_detected_action_delete),
+                PendingIntent.getBroadcast(context, code + 1, actionIntent(context, ACTION_DELETE, startTs, endTs), flags))
+        } else {
+            b.addAction(0, context.getString(R.string.workout_detected_action_save),
+                PendingIntent.getBroadcast(context, code + 2, actionIntent(context, ACTION_SAVE, startTs, endTs), flags))
+            b.addAction(0, context.getString(R.string.workout_detected_action_dismiss),
+                PendingIntent.getBroadcast(context, code + 3, actionIntent(context, ACTION_NOT_WORKOUT, startTs, endTs), flags))
+        }
+        // A stable tag per span means a re-post for the same span replaces rather than stacks.
+        NotificationManagerCompat.from(context).notify("workout.detected.$startTs", NOTIF_ID, b.build())
     }
 
     private fun ensureChannel(context: Context) {
@@ -340,7 +334,9 @@ object WorkoutDetectedNotifier {
  *  re-derive, and the current row is deleted). Not exported; only our own PendingIntent fires it. */
 class WorkoutDetectedActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != WorkoutDetectedNotifier.ACTION_DISMISS) return
+        val action = intent.action
+        if (action !in setOf(WorkoutDetectedNotifier.ACTION_DISMISS, WorkoutDetectedNotifier.ACTION_DELETE,
+                             WorkoutDetectedNotifier.ACTION_SAVE, WorkoutDetectedNotifier.ACTION_NOT_WORKOUT)) return
         val start = intent.getLongExtra(WorkoutDetectedNotifier.EXTRA_START_TS, -1L)
         val end = intent.getLongExtra(WorkoutDetectedNotifier.EXTRA_END_TS, -1L)
         if (start < 0 || end <= start) return
@@ -352,7 +348,13 @@ class WorkoutDetectedActionReceiver : BroadcastReceiver() {
             try {
                 val strapId = (app as? NoopApplication)?.activeDeviceId
                     ?.takeIf { it.isNotEmpty() } ?: WhoopRepository.WHOOP_SOURCE
-                WhoopRepository.from(app).dismissDetectedSpan(start, end, strapId)
+                val repo = WhoopRepository.from(app)
+                when (action) {
+                    WorkoutDetectedNotifier.ACTION_DELETE -> WorkoutAutoDetect.deleteAutoSaved(app, repo, strapId, start, end)
+                    WorkoutDetectedNotifier.ACTION_SAVE -> WorkoutAutoDetect.saveSuggestion(app, repo, strapId, start, end)
+                    WorkoutDetectedNotifier.ACTION_NOT_WORKOUT -> AutoWorkoutPrefs.dismissSpan(app, start, end)
+                    else -> repo.dismissDetectedSpan(start, end, strapId)
+                }
             } finally {
                 pending.finish()
             }

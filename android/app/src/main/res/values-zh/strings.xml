@@ -2817,6 +2817,8 @@
     <string name="workout_detected_channel_desc">当 NOOP 根据你的腕带数据自动保存检测到的运动记录时提醒。</string>
     <string name="workout_detected_action_edit">编辑</string>
     <string name="workout_detected_action_dismiss">不是运动记录</string>
+    <string name="workout_detected_action_delete">删除</string>
+    <string name="workout_detected_action_save">保存</string>
     <string name="l10n_notifications_settings_screen_detected_workout_notifications_950393c8">检测到运动记录的通知</string>
     <string name="workouts_suggested">建议</string>
     <string name="vitality_pace_of_aging">衰老速度</string>

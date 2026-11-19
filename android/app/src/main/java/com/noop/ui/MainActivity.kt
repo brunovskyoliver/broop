@@ -1430,10 +1430,10 @@ object NoopPrefs {
         of(context).edit().putLong(KEY_REPORT_LAST_WORKOUT_TS, ts).apply()
     }
 
-    /** 2026-09-21 detected-workout notification (Swift `WorkoutDetectedNotifier` twin): opt-in,
-     *  default OFF. The engine auto-SAVES `sport="detected"` bouts on every analysis pass regardless;
-     *  this toggle gates only the FYI notification posted once a bout has settled (~10 min after it
-     *  ends). Same key string as the iOS UserDefaults key so the toggle reads identically. */
+    /** Detected-workout notifications (Swift `WorkoutDetectedNotifier` twin). Default ON since the
+     *  2026-11-18 auto-save: confident sessions are saved on every analysis pass regardless, and this
+     *  toggle gates only the notifications about them and about open suggestions. Same key string as the
+     *  iOS UserDefaults key so the toggle reads identically. */
     const val KEY_WORKOUT_DETECTED_NOTIFY = "workoutDetectedNotify"
 
     /** Settled span tokens ("startTs:endTs") for the detected-workout notification — the dedupe
@@ -1443,7 +1443,7 @@ object NoopPrefs {
     const val KEY_WORKOUT_DETECTED_SETTLED = "workouts.detectedNotified"
 
     fun workoutDetectedNotifyEnabled(context: Context): Boolean =
-        of(context).getBoolean(KEY_WORKOUT_DETECTED_NOTIFY, false)
+        of(context).getBoolean(KEY_WORKOUT_DETECTED_NOTIFY, true)
 
     fun setWorkoutDetectedNotifyEnabled(context: Context, enabled: Boolean) {
         of(context).edit().putBoolean(KEY_WORKOUT_DETECTED_NOTIFY, enabled).apply()

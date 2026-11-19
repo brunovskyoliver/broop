@@ -246,8 +246,8 @@ fun NotificationsSettingsScreen(vm: AppViewModel) {
     var morningReport by remember { mutableStateOf(NoopPrefs.morningReportEnabled(context)) }
     var postWorkoutReport by remember { mutableStateOf(NoopPrefs.postWorkoutReportEnabled(context)) }
     var strainTargetReport by remember { mutableStateOf(NoopPrefs.strainTargetEnabled(context)) }
-    // 2026-09-21: detected-workout FYI — the engine auto-saves `sport="detected"` bouts regardless;
-    // this only gates the notification posted ~10 min after one ends. Opt-in, default OFF.
+    // Detected-workout notifications: confident sessions are auto-saved regardless; this only gates the
+    // notifications about them and about open suggestions. Default ON (2026-11-18).
     var workoutDetectedReport by remember { mutableStateOf(NoopPrefs.workoutDetectedNotifyEnabled(context)) }
     var phonePermissionDenied by remember { mutableStateOf(false) }
     // API 33+: flipping the toggle ON is the just-in-time moment to ask for POST_NOTIFICATIONS —

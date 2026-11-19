@@ -2839,6 +2839,8 @@
     <string name="workout_detected_channel_desc">Um aviso quando o NOOP guarda automaticamente um treino que detetou nos dados da sua banda.</string>
     <string name="workout_detected_action_edit">Editar</string>
     <string name="workout_detected_action_dismiss">Não é um treino</string>
+    <string name="workout_detected_action_delete">Eliminar</string>
+    <string name="workout_detected_action_save">Guardar</string>
     <string name="l10n_notifications_settings_screen_detected_workout_notifications_950393c8">Notificações de treinos detetados</string>
     <string name="workouts_suggested">sugerido</string>
     <string name="vitality_pace_of_aging">Ritmo de envelhecimento</string>

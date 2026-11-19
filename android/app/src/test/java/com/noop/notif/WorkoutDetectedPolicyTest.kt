@@ -205,4 +205,22 @@ class WorkoutDetectedPolicyTest {
         assertNull(WorkoutDetectedPolicy.classLabel("other"))
         assertNull(WorkoutDetectedPolicy.classLabel(null))
     }
+
+    // 2026-11-18 auto-save copy: byte-identical to the Swift WorkoutDetectedPolicyTests strings.
+    @Test
+    fun savedCopyNamesTheSportAndWhereItCameFrom() {
+        val (title, body) = WorkoutDetectedPolicy.savedCopy(
+            WorkoutDetectedPolicy.Candidate(0, 45 * 60, 116, 150, "strength"), "Strength Training")
+        org.junit.Assert.assertEquals("Workout saved", title)
+        org.junit.Assert.assertEquals("Strength Training · 45 min · avg 116 bpm · peaked 150 bpm. " +
+            "Detected from your strap — delete it if it was not a workout.", body)
+    }
+
+    @Test
+    fun suggestedCopyAsksAndHedgesTheClass() {
+        org.junit.Assert.assertEquals("32 min · avg 108 bpm · peaked 131 bpm — looks like Walking. Save it?",
+            WorkoutDetectedPolicy.suggestedCopy(WorkoutDetectedPolicy.Candidate(0, 32 * 60, 108, 131, "walk")).second)
+        org.junit.Assert.assertEquals("32 min · avg 108 bpm. Save it?",
+            WorkoutDetectedPolicy.suggestedCopy(WorkoutDetectedPolicy.Candidate(0, 32 * 60, 108, null)).second)
+    }
 }

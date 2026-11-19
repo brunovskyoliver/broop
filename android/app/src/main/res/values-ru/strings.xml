@@ -2742,6 +2742,8 @@
     <string name="workout_detected_channel_desc">Уведомление, когда NOOP автоматически сохраняет тренировку, распознанную по данным браслета.</string>
     <string name="workout_detected_action_edit">Изменить</string>
     <string name="workout_detected_action_dismiss">Не тренировка</string>
+    <string name="workout_detected_action_delete">Удалить</string>
+    <string name="workout_detected_action_save">Сохранить</string>
     <string name="l10n_notifications_settings_screen_detected_workout_notifications_950393c8">Уведомления о распознанных тренировках</string>
     <string name="workouts_suggested">предложено</string>
     <string name="vitality_pace_of_aging">Темп старения</string>

@@ -21,14 +21,14 @@ object AutoWorkoutPrefs {
 
     /**
      * Hard cap on the dismissed-span set — a backstop so it can't grow without bound even in
-     * pathological use. 200 most-recent (by span END) is far more than detection's ~2-day window can
+     * pathological use. 200 most-recent (by span END) is far more than detection's 7-day window can
      * ever re-surface; the age prune below normally keeps it much shorter. Mirrors the iOS twin.
      */
     private const val DISMISSED_MAX = 200
 
     /**
      * Spans whose END is older than this many seconds can never be re-suggested (detection only scans
-     * the last ~2 days), so we drop them. 30 days, matching the iOS twin byte-for-byte.
+     * the last 7 days), so we drop them. 30 days, matching the iOS twin byte-for-byte.
      */
     private const val DISMISSED_MAX_AGE_SEC = 30L * 86_400L
 
@@ -74,6 +74,40 @@ object AutoWorkoutPrefs {
             .take(DISMISSED_MAX)
             .toSet()
     }
+
+    private const val KEY_AUTO_SAVED = "workouts.autoSaved"
+    private const val KEY_FULL_SCAN_DAY = "workouts.autoSaveFullScanDay"
+
+    /** "startSec:endSec" tokens as spans; malformed or non-positive-width entries are dropped. */
+    fun spans(tokens: Collection<String>): List<Pair<Long, Long>> = tokens.mapNotNull { t ->
+        val p = t.split(":")
+        val a = p.getOrNull(0)?.toLongOrNull()
+        val b = p.getOrNull(1)?.toLongOrNull()
+        if (p.size == 2 && a != null && b != null && b > a) a to b else null
+    }
+
+    /** Spans this device ever auto-saved (2026-11-18 ledger; same key as the iOS UserDefaults list). */
+    fun autoSaved(ctx: Context): Set<String> =
+        prefs(ctx).getStringSet(KEY_AUTO_SAVED, emptySet())?.toSet() ?: emptySet()
+
+    fun recordAutoSaved(ctx: Context, startSec: Long, endSec: Long) {
+        val cur = autoSaved(ctx).toMutableSet()
+        if (cur.add("$startSec:$endSec")) {
+            prefs(ctx).edit().putStringSet(KEY_AUTO_SAVED, prune(cur, System.currentTimeMillis() / 1000L)).apply()
+        }
+    }
+
+    /** Span-addressed dismissal, for the notification actions that carry only a span. */
+    fun dismissSpan(ctx: Context, startSec: Long, endSec: Long) {
+        val cur = dismissed(ctx).toMutableSet()
+        if (cur.add("$startSec:$endSec")) {
+            prefs(ctx).edit().putStringSet(KEY_DISMISSED, prune(cur, System.currentTimeMillis() / 1000L)).apply()
+        }
+    }
+
+    /** Local epoch day of the last auto-save pass that scanned the whole suggestion lifetime. */
+    fun fullScanDay(ctx: Context): Long = prefs(ctx).getLong(KEY_FULL_SCAN_DAY, Long.MIN_VALUE)
+    fun setFullScanDay(ctx: Context, day: Long) { prefs(ctx).edit().putLong(KEY_FULL_SCAN_DAY, day).apply() }
 
     /** The set of dismissed span tokens (empty when none). */
     fun dismissed(ctx: Context): Set<String> =

@@ -49,27 +49,24 @@ import java.util.Locale
 /**
  * AutoWorkoutNudge — the NON-DESTRUCTIVE "looks like a workout" Today card (MVP auto-detect, opt-in).
  *
- * Android twin of iOS `AutoWorkoutCard` (Strand/Screens/AutoWorkoutCard.swift), wired to the byte-parity
- * [AutoWorkoutDetector]. Gated on [NoopPrefs.autoDetectWorkouts] (default OFF) — when off, NOTHING runs
- * and nothing renders. When on, after Today appears (and whenever the data refreshes) it scans the last
- * couple of days of strap HR through the pure detector, excludes any window that OVERLAPS a saved workout
- * (any source) or was previously dismissed, and surfaces ONE card — the most recent candidate:
+ * Android twin of the iOS suggestion card. Gated on [NoopPrefs.autoDetectWorkouts] — when off, NOTHING runs
+ * and nothing renders. When on, after Today appears (and whenever the data refreshes) it reads the open
+ * suggestions from [WorkoutAutoDetect] (the last week of [com.noop.analytics.WorkoutDetector] sessions,
+ * minus saved, dismissed and auto-saved spans; 2026-11-18) and surfaces ONE card — the most recent:
  *
  *   "Looks like a workout around <start>–<end> (avg HR <avg>, <dur> min). Save it?"
  *
- * SAVE → builds a manual-style "Workout" row over the window (avg HR filled) via the existing
- * [WorkoutEditing.buildManualRow] + [com.noop.data.WhoopRepository.saveManualWorkout] path. DISMISS
- * (× or "Not a workout") → records the exact window in [AutoWorkoutPrefs]; candidate filtering also honors
- * legacy analytics-dismissal markers. It NEVER creates a workout without the user tapping Save.
+ * SAVE → [WorkoutAutoDetect.buildRow]: a manual row over the window with the detector's figures, under the
+ * suggested sport. DISMISS (× or "Not a workout") → records the window in [AutoWorkoutPrefs]; filtering
+ * matches every dismissal store by overlap. The card itself never creates a workout without Save; confident
+ * sessions are saved by the analysis pass ([WorkoutAutoDetect.runAutoSave]), not here.
  *
  * Design-Reset compliant: a flat accent-tinted [NoopCard], NoopMetrics tokens, no gold — matching the
  * other Today cards (matches the iOS source exactly).
  */
 
-/** Generic sport label for a saved auto-detected bout — the user can re-label via Workouts → Edit. */
-private const val AUTO_DETECT_SPORT = "Workout"
-
-/** Days of HR history the scan covers — matches the iOS `autoDetectCandidate(daysBack: 2)`. */
+/** Days of HR history the Test Centre shadow diagnostics cover (the card itself covers
+ *  [WorkoutAutoDetect.SUGGESTION_LIFETIME_DAYS]). */
 private const val AUTO_DETECT_DAYS_BACK = 2L
 
 /**
@@ -130,7 +127,7 @@ fun AutoWorkoutNudgeCard(
     if (!enabled) return
 
     // The single surfaced candidate (null = nothing to suggest). Re-scanned whenever the day data grows.
-    var candidate by remember { mutableStateOf<AutoWorkoutDetector.DetectedWorkout?>(null) }
+    var candidate by remember { mutableStateOf<WorkoutAutoDetect.Suggestion?>(null) }
     // Hide immediately on Save/X without waiting for the next reload (mirrors iOS `handledThisSession`).
     var handledThisSession by remember { mutableStateOf(false) }
 
@@ -180,7 +177,7 @@ fun AutoWorkoutNudgeCard(
                 // Standard × dismiss → record the window durably so it never re-prompts.
                 IconButton(
                     onClick = {
-                        AutoWorkoutPrefs.dismiss(context, w)
+                        AutoWorkoutPrefs.dismissSpan(context, w.startSec, w.endSec)
                         handledThisSession = true
                         candidate = null
                     },
@@ -209,20 +206,10 @@ fun AutoWorkoutNudgeCard(
             ) {
                 Button(
                     onClick = {
-                        // Build the manual-style "Workout" row over the detected window (avg HR filled),
-                        // saved via the SAME manual path the Workouts screen uses. buildManualRow is pure.
-                        val durMin = ((w.endSec - w.startSec) / 60L).toInt().coerceAtLeast(1)
-                        val row = WorkoutEditing.buildManualRow(
-                            // Save under the ACTIVE strap id (what the Workouts union reads, #200/#814),
-                            // mirroring iOS `saveDetectedWorkout`. Not the visibility fix (workoutsUnion
-                            // reads "my-whoop" too) but keeps the id consistent with the list + exclusion.
-                            deviceId = viewModel.deviceId,
-                            startSeconds = w.startSec,
-                            durationMin = durMin,
-                            sport = AUTO_DETECT_SPORT,
-                            avgHr = w.avgBpm,
-                            energyKcal = null,
-                        )
+                        // The manual row over the exact detected window with everything the detector
+                        // computed, under the suggested sport (twin of iOS `buildRow(fromSuggestion:)`).
+                        // Saved under the ACTIVE strap id (what the Workouts union reads, #200/#814).
+                        val row = WorkoutAutoDetect.buildRow(w, viewModel.deviceId)
                         // #214 ROOT CAUSE: save on the ViewModel's scope, NOT the card's. Setting
                         // handledThisSession=true removes this card from composition immediately (see the
                         // `return` gate above), which CANCELS its rememberCoroutineScope — so the old
@@ -240,7 +227,7 @@ fun AutoWorkoutNudgeCard(
 
                 OutlinedButton(
                     onClick = {
-                        AutoWorkoutPrefs.dismiss(context, w)
+                        AutoWorkoutPrefs.dismissSpan(context, w.startSec, w.endSec)
                         handledThisSession = true
                         candidate = null
                     },
@@ -251,112 +238,70 @@ fun AutoWorkoutNudgeCard(
 }
 
 /**
- * Pure read + suggestion path mirroring iOS `Repository.autoDetectCandidate(daysBack:)`. Scans the last
- * [AUTO_DETECT_DAYS_BACK] days of HR, runs the byte-parity detector, excludes saved + dismissed windows,
- * and returns the MOST RECENT surviving candidate (newest first), or null. Never writes anything.
+ * The card's suggestion: the newest open one from [WorkoutAutoDetect.openSuggestions] (the last
+ * [WorkoutAutoDetect.SUGGESTION_LIFETIME_DAYS] days, saved and dismissed spans excluded; sessions that
+ * clear the auto-save bar are saved by the analysis pass and leave). Never writes anything. With Workouts
+ * Test Centre active, the old detector's trace and shadow comparison are logged too, as before.
  */
 private suspend fun autoDetectCandidate(
     viewModel: AppViewModel,
     context: android.content.Context,
     days: List<DailyMetric>,
-): AutoWorkoutDetector.DetectedWorkout? {
+): WorkoutAutoDetect.Suggestion? {
+    if (com.noop.testcentre.TestCentre.from(context).active(com.noop.testcentre.TestDomain.WORKOUTS)) {
+        runCatching { logAutoDetectShadow(viewModel, context, days) }
+    }
+    return WorkoutAutoDetect.openSuggestions(context, viewModel.repo, viewModel.deviceId, days).firstOrNull()
+}
+
+/** Workouts & GPS test mode: the old detector's trace and shadow comparison, as diagnostics only. */
+private suspend fun logAutoDetectShadow(
+    viewModel: AppViewModel,
+    context: android.content.Context,
+    days: List<DailyMetric>,
+) {
     val nowSec = System.currentTimeMillis() / 1000
     val fromSec = nowSec - AUTO_DETECT_DAYS_BACK * 86_400L
     val repo = viewModel.repo
-
-    // #767/#717: read HR over the ACTIVE-strap UNION, not the hardcoded "my-whoop" id. A live-BLE strap
-    // banks its raw under its OWN fresh id ("whoop-<uuid>", #908), so a read pinned to "my-whoop" finds
-    // NOTHING and auto-detect goes silent — even though sleep/charge (which read the union) keep working.
-    // Mirrors iOS Repository.autoDetectCandidate(), which reads the hrSamples(from:to:) union.
     val hr = repo.hrSamplesUnion(viewModel.deviceId, fromSec, nowSec, limit = 200_000)
-    if (hr.size < 2) return null
-
-    // Resting HR: most recent nightly RHR in history, else the detector's own default (60). Byte-faithful
-    // to iOS `days.last(where: { restingHr != nil })?.restingHr`.
+    if (hr.size < 2) return
     val restingHr = days.lastOrNull { it.restingHr != null }?.restingHr
-
-    // Exclude EVERY already-saved workout window. The repository unions include the active, canonical and
-    // archived WHOOP ids plus all computed siblings; the explicit sources mirror Swift `workoutRows()` and
-    // add Android's Health Connect lane. Reusing the product's cross-source collapse prevents mirrored
-    // imports from inflating shadow labels while retaining every genuinely distinct activity.
-    val savedRows = mergeAutoDetectSavedRows(
-        whoopRows = repo.workoutsUnion(viewModel.deviceId, fromSec, nowSec),
-        computedRows = repo.detectedWorkoutsUnion(viewModel.deviceId, fromSec, nowSec),
-        appleRows = repo.workouts("apple-health", fromSec, nowSec),
-        healthConnectRows = repo.workouts("health-connect", fromSec, nowSec),
-        liftingRows = repo.workouts(LiftingImporter.SOURCE_ID, fromSec, nowSec),
-        activityFileRows = repo.workouts(ActivityFileImporter.SOURCE_ID, fromSec, nowSec),
-    )
+    val savedRows = WorkoutAutoDetect.savedRows(repo, viewModel.deviceId, fromSec, nowSec)
     val saved = savedRows.map { it.startTs to it.endTs }
-
-    // 2026-09-21: motion + HRmax now reach the detector. Gravity is the stored union stream (one batched
-    // read over the same window the HR read already pays for — no new strap traffic), so the suggestion
-    // can require real movement instead of trusting an elevated-HR-only window. maxHR is the profile's
-    // effective HRmax (user override else Tanaka); when the profile resolves <= 0 the detector falls
-    // back to its legacy fixed floor, byte-identical to before.
     val gravity = repo.gravitySamplesUnion(viewModel.deviceId, fromSec, nowSec)
     val maxHR = ProfileStore.from(context).hrMax.takeIf { it > 0 }
+    val (_, trace) = AutoWorkoutDetectorTrace.detectTrace(
+        hr = hr,
+        restingHR = restingHr,
+        gravity = gravity,
+        savedWorkouts = saved,
+        maxHR = maxHR,
+        path = "autoDetect",
+    )
+    for (line in trace) viewModel.ble.externalLog(line, com.noop.testcentre.TestDomain.WORKOUTS)
 
-    // Workouts & GPS test mode (Test Centre): when on, run the diagnostic twin which returns the SAME
-    // candidates detect(...) does (it reuses detect verbatim) plus the inputs / thresholds / per-window why
-    // trace, routed to the .workouts-tagged strap log. Zero-cost when off: one SharedPreferences bool read,
-    // and detectTrace is only called on that branch, so the default path runs the untraced detect.
-    val candidates = if (com.noop.testcentre.TestCentre.from(context)
-            .active(com.noop.testcentre.TestDomain.WORKOUTS)
-    ) {
-        val (results, trace) = AutoWorkoutDetectorTrace.detectTrace(
+    // #2187 PR 1: evaluate the published 12-minute baseline plus proposed 10/15 alternatives in SHADOW.
+    // Use the exact same detector and inputs as the published 12-minute path, but do not feed either
+    // result into the card, persistence, or downstream scoring. Compare against real saved sessions
+    // (manual/imported); legacy computed rows are deliberately not labels. Aggregate local log lines
+    // are the only output and are emitted only while Workouts Test Centre is explicitly active.
+    val labelledSpans = autoDetectLabelledSpans(savedRows)
+    for (policy in autoDetectShadowPolicies()) {
+        val shadow = AutoWorkoutDetector.detect(
             hr = hr,
             restingHR = restingHr,
-            gravity = gravity,
-            savedWorkouts = saved,
-            maxHR = maxHR,
-            path = "autoDetect",
+            gravity = emptyList(), // preserve the published HR-only input contract in shadow
+            savedWorkouts = emptyList(), // labels must remain visible to the comparison
+            minimumSustainedMinutes = policy,
         )
-        for (line in trace) viewModel.ble.externalLog(line, com.noop.testcentre.TestDomain.WORKOUTS)
-
-        // #2187 PR 1: evaluate the published 12-minute baseline plus proposed 10/15 alternatives in SHADOW.
-        // Use the exact same detector and inputs as the published 12-minute path, but do not feed either
-        // result into the card, persistence, or downstream scoring. Compare against real saved sessions
-        // (manual/imported); legacy computed rows are deliberately not labels. Aggregate local log lines
-        // are the only output and are emitted only while Workouts Test Centre is explicitly active.
-        val labelledSpans = autoDetectLabelledSpans(savedRows)
-        for (policy in autoDetectShadowPolicies()) {
-            val shadow = AutoWorkoutDetector.detect(
-                hr = hr,
-                restingHR = restingHr,
-                gravity = emptyList(), // preserve the published HR-only input contract in shadow
-                savedWorkouts = emptyList(), // labels must remain visible to the comparison
-                minimumSustainedMinutes = policy,
-            )
-            viewModel.ble.externalLog(
-                AutoWorkoutDetectorTrace.shadowComparisonLine(
-                    policy,
-                    shadow,
-                    labelledSpans,
-                    hrForObservability = hr,
-                ),
-                com.noop.testcentre.TestDomain.WORKOUTS,
-            )
-        }
-        results
-    } else {
-        AutoWorkoutDetector.detect(
-            hr = hr,
-            restingHR = restingHr,
-            gravity = gravity,
-            savedWorkouts = saved,
-            maxHR = maxHR,
+        viewModel.ble.externalLog(
+            AutoWorkoutDetectorTrace.shadowComparisonLine(
+                policy,
+                shadow,
+                labelledSpans,
+                hrForObservability = hr,
+            ),
+            com.noop.testcentre.TestDomain.WORKOUTS,
         )
     }
-    // Honor BOTH historic dismissal stores. The suggestion MVP wrote exact tokens to SharedPreferences;
-    // the durable analytics path wrote overlap-aware markers under each computed source. Read both active
-    // and archived namespaces so a strap re-pair cannot resurrect a rejected candidate. Card tokens keep
-    // their exact-match contract; legacy engine markers keep their half-open interval-overlap contract.
-    val legacyDismissed = AutoWorkoutPrefs.dismissed(context)
-    val detectedDismissed = repo.dismissedDetectedUnion(viewModel.deviceId)
-        .map { it.startTs to it.endTs }
-        .distinct()
-    return candidates
-        .filterNot { AutoWorkoutPrefs.isDismissed(it, legacyDismissed, detectedDismissed) }
-        .maxByOrNull { it.startSec }
 }

@@ -2860,6 +2860,8 @@
     <string name="workout_detected_channel_desc">Ein Hinweis, wenn NOOP ein aus deinen Strap-Daten erkanntes Workout automatisch speichert.</string>
     <string name="workout_detected_action_edit">Bearbeiten</string>
     <string name="workout_detected_action_dismiss">Kein Workout</string>
+    <string name="workout_detected_action_delete">Löschen</string>
+    <string name="workout_detected_action_save">Sichern</string>
     <string name="l10n_notifications_settings_screen_detected_workout_notifications_950393c8">Mitteilungen zu erkannten Workouts</string>
     <string name="workouts_suggested">vorgeschlagen</string>
     <string name="vitality_pace_of_aging">Alterungstempo</string>
