@@ -153,7 +153,7 @@ struct BroopOverviewCoupledScreen: View {
                     VStack(alignment: .leading, spacing: 12) {
                         stat(String(localized: "Optimal"), target.map { String(localized: "\($0.lowerText) to \($0.upperText)") } ?? "—",
                              recovery.map(BroopPalette.band) ?? BroopPalette.textSecondary)
-                        stat(String(localized: "Calories"), activeKcal.map { "\(Int($0.rounded())) kcal" } ?? "—",
+                        stat(String(localized: "Active calories"), activeKcal.map { "\(Int($0.rounded())) kcal" } ?? "—",
                              BroopPalette.textPrimary)
                         stat(String(localized: "Workouts"), "\(day?.exerciseCount ?? 0)", BroopPalette.textPrimary)
                     }

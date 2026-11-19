@@ -2908,4 +2908,6 @@
     <string name="accuracy_hr_coverage">Couverture de la fréquence cardiaque</string>
     <string name="accuracy_missing_hr">Les données de fréquence cardiaque manquantes peuvent sous-estimer Effort et les calories.</string>
     <string name="accuracy_strength_effort">Effort mesure la charge cardiovasculaire. Notez les séries et les poids pour suivre la charge de musculation.</string>
+    <string name="energy_total_calories">Calories totales</string>
+    <string name="energy_active_calories">Calories actives</string>
 </resources>

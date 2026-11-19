@@ -2939,4 +2939,7 @@
     <string name="accuracy_hr_coverage">Heart-rate coverage</string>
     <string name="accuracy_missing_hr">Missing heart-rate data can understate Effort and calories.</string>
     <string name="accuracy_strength_effort">Effort measures cardiovascular load. Log sets and weights to track lifting load.</string>
+    <!-- Day energy: the total includes BMR; active is the energy above it. -->
+    <string name="energy_total_calories">Total calories</string>
+    <string name="energy_active_calories">Active calories</string>
 </resources>

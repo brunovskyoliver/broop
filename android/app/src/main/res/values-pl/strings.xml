@@ -2925,4 +2925,6 @@
     <string name="accuracy_hr_coverage">Pokrycie danych tętna</string>
     <string name="accuracy_missing_hr">Brak danych tętna może zaniżać Effort i kalorie.</string>
     <string name="accuracy_strength_effort">Effort mierzy obciążenie układu krążenia. Zapisuj serie i ciężary, aby śledzić obciążenie treningu siłowego.</string>
+    <string name="energy_total_calories">Kalorie łącznie</string>
+    <string name="energy_active_calories">Aktywne kalorie</string>
 </resources>
