@@ -48,6 +48,69 @@ public enum DayCycleResolver {
         return midnight >= minimum ? midnight : (dayNumber + 1) * SleepStageTotals.secondsPerDay - offsetSec
     }
 
+    /// A cycle boundary with the calendar day whose row it fills (the day its main sleep ends on).
+    public struct WakeDayBoundary: Equatable, Sendable {
+        public let sleepId: String
+        public let onset: Int
+        public let wakeDay: String
+        public init(sleepId: String, onset: Int, wakeDay: String) {
+            self.sleepId = sleepId; self.onset = onset; self.wakeDay = wakeDay
+        }
+    }
+
+    /// A calendar day that no main sleep ends on, cut out of the cycle that would otherwise run across it.
+    public struct UncoveredDay: Equatable, Sendable {
+        /// `synthetic:<day>`, the same id the open-cycle cap in `activeWindow` gives the same day.
+        public let sleepId: String
+        /// Local midnight at the start of `day`.
+        public let onset: Int
+        public let day: String
+        /// The boundary whose cycle the day was cut from.
+        public let splitFrom: String
+    }
+
+    /// Calendar days that fall strictly between two consecutive wake days, or between the last wake day
+    /// and the calendar day of `now`, each with a boundary at its own local midnight.
+    ///
+    /// A night with no detected main sleep (strap on the charger, a night spent awake) has no boundary,
+    /// so the cycle before it ran to the NEXT night's onset: one row carried two days of steps, Effort and
+    /// energy and the following row was empty (2026-11-08 and 2026-11-13 on real data). Cutting at the
+    /// orphan day's midnight is the window the Home screens already read for that day, since a day with
+    /// no onset marker falls back to its calendar bound. Consecutive wake days yield nothing, so ordinary
+    /// cycles are unchanged. Only days that have fully started are cut, and the day of `now` is never
+    /// cut by this rule: a sleep ending later today may still claim it. The live cap in `activeWindow`
+    /// covers the open cycle before that, and its boundary must be passed in so the day counts as claimed.
+    ///
+    /// Kotlin twin: `DayCycleResolver.uncoveredDays`.
+    public static func uncoveredDays(_ boundaries: [WakeDayBoundary], now: Int,
+                                     offsetSec: Int) -> [UncoveredDay] {
+        var ids = Set<String>()
+        let ordered = boundaries.filter { $0.onset <= now && ids.insert($0.sleepId).inserted }
+            .sorted { $0.onset != $1.onset ? $0.onset < $1.onset : $0.sleepId < $1.sleepId }
+        let claimed = Set(ordered.map(\.wakeDay))
+        let today = AnalyticsEngine.dayString(now, offsetSec: offsetSec)
+        var output: [UncoveredDay] = []
+        for index in ordered.indices {
+            let item = ordered[index]
+            let nextDay = index + 1 < ordered.count ? ordered[index + 1].wakeDay : today
+            let nextOnset = index + 1 < ordered.count ? ordered[index + 1].onset : now
+            let dayStart = AnalyticsEngine.dayStartUtcSeconds(item.wakeDay)
+            // A malformed key parses to 0; walking from 1970 would invent decades of days.
+            guard AnalyticsEngine.dayString(dayStart) == item.wakeDay else { continue }
+            var midnight = dayStart + SleepStageTotals.secondsPerDay - offsetSec
+            while midnight < nextOnset {
+                let day = AnalyticsEngine.dayString(midnight, offsetSec: offsetSec)
+                guard day < nextDay else { break }
+                if midnight > item.onset && !claimed.contains(day) {
+                    output.append(UncoveredDay(sleepId: "synthetic:\(day)", onset: midnight, day: day,
+                                               splitFrom: item.sleepId))
+                }
+                midnight += SleepStageTotals.secondsPerDay
+            }
+        }
+        return output
+    }
+
     /// Kotlin twin: `DayCycleResolver.activeWindow`.
     public static func activeWindow(mode: DayCycleMode, latestSleep: DayCycleWindow?, now: Int,
                                     offsetSec: Int) -> DayCycleWindow {
