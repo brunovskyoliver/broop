@@ -116,7 +116,7 @@ fun BodyClockDialCard(
             ) {
                 val side = min(size.width, size.height)
                 val centre = Offset(size.width / 2f, size.height / 2f)
-                // NAMED BANDS, twin of the Swift `DialGeometry`. The previous pair collided: the
+                // NAMED BANDS, mirrored by the Swift `BodyClockDialLayoutTests`. The previous pair collided: the
                 // reference arc was stroked at `outer`, the radius the six-hour ticks occupy, so on a
                 // window spanning midnight the dashes ran into the ticks (#2350). Each band owns a
                 // radius and a width, and `BodyClockDialLayoutTest` asserts they cannot overlap.

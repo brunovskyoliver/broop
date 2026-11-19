@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Tests Calories.estimateDayCalories — the APPROXIMATE whole-day HR-only energy estimate
+ * Tests Calories.estimateDayEnergy (its total) — the APPROXIMATE whole-day HR-only energy estimate
  * (Keytel active + Harris–Benedict BMR) that backs DailyMetric.activeKcalEst and the Today
  * Calories tile for BLE-only users. Pure-function tests; no DB. Not cloud/clinical parity.
  */
@@ -19,7 +19,7 @@ class DayCaloriesTest {
     fun dayCalories_emptyIsZero() {
         assertEquals(
             0.0,
-            Calories.estimateDayCalories(emptyList(), UserProfile(), hrmax = 190.0, restingHR = 55.0),
+            Calories.estimateDayEnergy(emptyList(), UserProfile(), hrmax = 190.0, restingHR = 55.0).totalKcal,
             1e-12,
         )
     }
@@ -54,7 +54,7 @@ class DayCaloriesTest {
         val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
         val block = 8 * 3_600
         val day = hrDay(55, block) + hrDay(130, block, block) + hrDay(70, block, 2 * block)
-        val total = Calories.estimateDayCalories(day, profile, hrmax = 185.0, restingHR = 55.0)
+        val total = Calories.estimateDayEnergy(day, profile, hrmax = 185.0, restingHR = 55.0).totalKcal
         // Measured from the legacy estimator on main. Its per-sample summation differs from the
         // new R × N association by ~6.6e-9 kcal, so keep tolerance above that rounding noise.
         assertEquals("a gapless 1 Hz day must remain equal to the legacy estimator",
@@ -166,8 +166,8 @@ class DayCaloriesTest {
         // and the resting-day total is positive (BMR floor).
         val profile = UserProfile(weightKg = 70.0, heightCm = 170.0, age = 30.0, sex = "nonbinary")
         // Day activeThreshold = 55 + 0.50*(185-55) = 120 bpm; 60 < 120 (resting), 150 >= 120 (active).
-        val restingDay = Calories.estimateDayCalories(hrDay(60, 3600), profile, hrmax = 185.0, restingHR = 55.0)
-        val activeDay = Calories.estimateDayCalories(hrDay(150, 3600), profile, hrmax = 185.0, restingHR = 55.0)
+        val restingDay = Calories.estimateDayEnergy(hrDay(60, 3600), profile, hrmax = 185.0, restingHR = 55.0).totalKcal
+        val activeDay = Calories.estimateDayEnergy(hrDay(150, 3600), profile, hrmax = 185.0, restingHR = 55.0).totalKcal
         assertTrue("resting day must burn > 0 (BMR floor)", restingDay > 0.0)
         assertTrue("active day must exceed resting day", activeDay > restingDay)
     }
@@ -180,7 +180,7 @@ class DayCaloriesTest {
         // Harris–Benedict BMR ≈ 1825 kcal. This is an APPROXIMATE estimate, not medical advice.
         val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
         val sedentary = hrDay(55, 86_400) // 24 h, all at resting HR
-        val total = Calories.estimateDayCalories(sedentary, profile, hrmax = 185.0, restingHR = 55.0)
+        val total = Calories.estimateDayEnergy(sedentary, profile, hrmax = 185.0, restingHR = 55.0).totalKcal
         assertEquals("a sedentary full day must total ≈ the subject's BMR (~1825 kcal)",
             1825.25, total, 1.0)
     }
@@ -195,7 +195,7 @@ class DayCaloriesTest {
         val profile = UserProfile(weightKg = 80.0, heightCm = 180.0, age = 35.0, sex = "male")
         val block = 8 * 3_600
         val lightDay = hrDay(55, block) + hrDay(70, block, block) + hrDay(100, block, 2 * block)
-        val total = Calories.estimateDayCalories(lightDay, profile, hrmax = 185.0, restingHR = 55.0)
+        val total = Calories.estimateDayEnergy(lightDay, profile, hrmax = 185.0, restingHR = 55.0).totalKcal
         // NEW total ≈ 1825 kcal (every second below the 120 bpm gate → BMR floor).
         assertEquals("a light-activity day must land near BMR, not the old inflated total",
             1825.25, total, 1.0)

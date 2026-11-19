@@ -1206,8 +1206,7 @@ interface WhoopDao : DeviceRegistryDao {
         const val LAB_BOOK_SOURCE_ID = "lab-book"
 
         /** The event kinds [com.noop.protocol.ChargerState] reads, matched by prefix (kinds carry their number). */
-        const val CHARGER_EDGE_FILTER = "(kind LIKE 'CHARGING_ON%' OR kind LIKE 'CHARGING_OFF%' OR " +
-            "kind LIKE 'BATTERY_PACK_REMOVED%' OR kind LIKE 'BOOT%')"
+        const val CHARGER_EDGE_FILTER = "(kind LIKE 'CHARGING_ON%' OR kind LIKE 'CHARGING_OFF%' OR kind LIKE 'BATTERY_PACK_REMOVED%' OR kind LIKE 'BOOT%')"
     }
 
     // MARK: - One-time #34 refile: separate legacy Health Connect data from the Apple Health bucket.
@@ -1453,7 +1452,8 @@ interface WhoopDao : DeviceRegistryDao {
 
     /**
      * The newest charger edges strictly before [before] (several, so a same-second pair still resolves by
-     * rank), for filling a WHOOP 5.0/MG battery row's charging state. Twin of Swift `withChargerState`.
+     * rank), for filling a WHOOP 5.0/MG battery row's charging state. Read by `WhoopRepository.withChargerState`;
+     * the Swift store runs the same SQL inline in WhoopStore `ChargerStateStore.swift`.
      */
     @Query("SELECT ts, kind FROM event WHERE deviceId = :deviceId AND ts < :before AND " +
         WhoopDao.CHARGER_EDGE_FILTER + " ORDER BY ts DESC LIMIT 8")

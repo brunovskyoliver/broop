@@ -38,8 +38,6 @@ object ChargerState {
         else -> null
     }
 
-    internal fun isEdge(kind: String): Boolean = effect(kind) != null
-
     /**
      * Fill each sample's missing `charging` from the latest edge at or before its timestamp. A sample that
      * already carries a value (a WHOOP 4.0 reads its own bit) keeps it. Order of either list is free.

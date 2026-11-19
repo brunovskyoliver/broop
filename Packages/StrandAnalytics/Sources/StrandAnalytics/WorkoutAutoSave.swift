@@ -52,6 +52,7 @@ public enum WorkoutAutoSave {
     /// - A run or ride: called so with `minCardioConfidence`, and cleared the detector's zone-2 bar
     ///   rather than only its activity tier.
     /// Both also need `minDurationS`, `minHRCoveragePct` and `minAvgHRRPct`. A walk is never saved.
+    /// Kotlin twin: `WorkoutAutoSave.verdict`.
     public static func verdict(session s: ExerciseSession, features: WorkoutClassFeatures?,
                                prediction: WorkoutClassPrediction?) -> Verdict {
         guard s.end - s.start >= minDurationS,
@@ -73,6 +74,7 @@ public enum WorkoutAutoSave {
 
     /// The classifier's view of one session, over the same streams `detect` was given. Every caller that
     /// classifies a detected session goes through here, so the app and a replay cannot disagree.
+    /// Kotlin twin: `WorkoutAutoSave.classify`.
     public static func classify(_ s: ExerciseSession, hr: [HRSample], gravity: [GravitySample],
                                 steps: [StepSample], restingHR: Double?)
         -> (features: WorkoutClassFeatures?, prediction: WorkoutClassPrediction?) {

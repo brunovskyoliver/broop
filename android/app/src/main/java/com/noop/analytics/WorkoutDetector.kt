@@ -411,7 +411,8 @@ object WorkoutDetector {
         return merged
     }
 
-    /** Activity-class values the 5/MG strap uses for gait: 1 = walk, 2 = run (0 = still, null = 4.0). */
+    /** Activity-class values the 5/MG strap uses for gait: 1 = walk, 2 = run (0 = still, null = 4.0).
+     *  Swift twin: `WorkoutDetector.isGait`. */
     internal fun isGait(activityClass: Int?): Boolean = activityClass == 1 || activityClass == 2
 
     /**
@@ -502,7 +503,8 @@ object WorkoutDetector {
     /** 2026-11-18: the most unseen time a stitch may cross — a grip dropout, not the strap coming off. */
     internal const val stitchMaxDropoutS: Long = 10 * 60
 
-    /** Minutes of [start]..[end] holding at least [gaitMinuteTicks] gait seconds, as a per-minute flag. */
+    /** Minutes of [start]..[end] holding at least [gaitMinuteTicks] gait seconds, as a per-minute flag.
+     *  Swift twin: `WorkoutDetector.walkingMinutes`. */
     internal fun walkingMinutes(start: Long, end: Long, gaitTs: List<Long>): BooleanArray {
         if (end < start) return BooleanArray(0)
         val ticks = IntArray(((end - start) / 60 + 1).toInt())
@@ -654,7 +656,7 @@ object WorkoutDetector {
 
             val minDurS = minExerciseMin * 60.0
             // Every reported stat comes from one window, so a stitched or back-dated session cannot show
-            // zones from its core beside avg HR and calories from the whole.
+            // zones from its core beside avg HR and calories from the whole. Swift twin: `WorkoutDetector.makeSession`.
             fun makeSession(from: Long, to: Long, activityTier: Boolean): ExerciseSession? {
                 val window = hrSeg.filter { it.ts in from..to }
                 if (window.isEmpty()) return null
@@ -754,7 +756,7 @@ object WorkoutDetector {
             f.splitDropped = (splitRoots - keptRoots).size
 
             // Rejoin pieces of one session that a low-HR rest (or a grip dropout) split apart. A walk piece
-            // is never a side of a join, and a walking streak in the gap blocks it.
+            // is never a side of a join, and a walking streak in the gap blocks it. Swift twin: `isWalk`.
             fun isWalk(w: ExerciseSession): Boolean {
                 val minutes = walkingMinutes(w.start, w.end, gaitSorted)
                 val frac = minutes.count { it }.toDouble() / maxOf(1, minutes.size).toDouble()
@@ -860,7 +862,7 @@ object Calories {
     const val activeHRRFraction: Double = 0.30
 
     /**
-     * Whole-day active gate ([estimateDayCalories] only). The Keytel 2005 equation is
+     * Whole-day active gate ([estimateDayEnergy] only). The Keytel 2005 equation is
      * validated for genuine EXERCISE HR; applying it to ordinary low-intensity daytime HR
      * (walking, stairs, standing — typically ~95–110 bpm) across the WHOLE day credits the
      * full gross-exercise rate to every elevated second and over-counts by ~1000+ kcal
@@ -946,7 +948,7 @@ object Calories {
      * This elapsed-time weighting is justified ONLY for the bout path: a bout's intra-sample
      * gaps are motion-gated and ≤ [mergeGapS] (150 s) by construction, so each gap really is
      * continuous active/resting time. The whole-day estimator deliberately does NOT use it
-     * (see [estimateDayCalories]) — its raw, non-gap-filled day HR union would otherwise
+     * (see [estimateDayEnergy]) — its raw, non-gap-filled day HR union would otherwise
      * credit up to 150 s of active burn to a single isolated elevated sample.
      *
      * @param hrSamples the bout's HR samples (any order; sorted by ts here).
@@ -1113,13 +1115,4 @@ object Calories {
         return DayEnergyEstimate(restingKcal, activeKcal, observedSeconds)
     }
 
-    /** Backward-compatible total-kcal facade for the stored daily metric. */
-    fun estimateDayCalories(
-        hrSamples: List<HrSample>,
-        profile: UserProfile,
-        hrmax: Double?,
-        restingHR: Double?,
-    ): Double {
-        return estimateDayEnergy(hrSamples, profile, hrmax, restingHR).totalKcal
-    }
 }

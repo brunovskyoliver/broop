@@ -49,8 +49,11 @@ class ChargerStateTest {
         assertEquals(fourZero, ChargerState.resolve(fourZero, edges))
         assertNull(ChargerState.resolve(listOf(sample(1_000)), emptyList()).single().charging)
         assertNull(ChargerState.resolve(listOf(sample(1_000)), listOf(ChargerState.Edge(1, "WRIST_ON(9)"))).single().charging)
-        assertTrue("a later schema name must not read as a boot", !ChargerState.isEdge("BOOTLOADER_ENTERED"))
-        assertTrue("a pack attached is not charging", !ChargerState.isEdge("BATTERY_PACK_CONNECTED(21)"))
+        assertEquals("a later schema name must not read as a boot", true,
+            ChargerState.resolve(listOf(sample(300)),
+                listOf(ChargerState.Edge(100, "CHARGING_ON(7)"), ChargerState.Edge(200, "BOOTLOADER_ENTERED"))).single().charging)
+        assertNull("a pack attached is not charging",
+            ChargerState.resolve(listOf(sample(300)), listOf(ChargerState.Edge(100, "BATTERY_PACK_CONNECTED(21)"))).single().charging)
     }
 
     @Test

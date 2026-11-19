@@ -2833,5 +2833,7 @@
     <string name="accuracy_missing_hr">I dati mancanti della frequenza cardiaca possono sottostimare Effort e calorie.</string>
     <string name="accuracy_strength_effort">Effort misura il carico cardiovascolare. Registra serie e pesi per monitorare il carico del sollevamento.</string>
     <string name="energy_total_calories">Calorie totali</string>
+    <string name="workout_detected_action_delete">Elimina</string>
+    <string name="workout_detected_action_save">Salva</string>
     <string name="energy_active_calories">Calorie attive</string>
 </resources>

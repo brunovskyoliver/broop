@@ -28,6 +28,7 @@ public enum ChargerState {
 
     /// The state an edge sets (nil for BOOT, which clears it), and its order among edges in one second:
     /// a boot first, then a pack removal, then a charging edge, so the charging edge has the last word.
+    /// Kotlin twin: `ChargerState.effect`.
     static func effect(_ kind: String) -> (charging: Bool?, rank: Int)? {
         // "BOOT(" rather than "BOOT": the schema may later name events that only start with it.
         if kind.hasPrefix("BOOT(") || kind == "BOOT" { return (nil, 0) }
@@ -40,6 +41,7 @@ public enum ChargerState {
     /// Fill each sample's missing `charging` from the latest edge at or before its timestamp. A sample that
     /// already carries a value (a WHOOP 4.0 reads its own bit) keeps it. `edges` may be in any order and
     /// may include unrelated kinds, which are ignored.
+    /// Kotlin twin: `ChargerState.resolve`.
     public static func resolve(_ samples: [BatterySample], edges: [Edge]) -> [BatterySample] {
         guard samples.contains(where: { $0.charging == nil }) else { return samples }
         let ordered = edges.compactMap { e in effect(e.kind).map { (ts: e.ts, charging: $0.charging, rank: $0.rank) } }

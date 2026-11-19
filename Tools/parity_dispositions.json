@@ -1017,6 +1017,107 @@
       "identity_sha256": "6aa52285ae46cf0ae75a690feee01765f9401825b6c9845c146163fdf5b2bb3e",
       "platform": "swift",
       "rationale": "A LOCAL binding inside the private v16 ECG decoder (#2847), not a static constant. The ledger's Swift rule treats any four-space `let` in a file-scope function as a candidate `static let`, which is how it finds file-scope constants without parsing, so a local in a top-level `private func` lands in the inventory. The Kotlin twin's equivalent is a local `val` in its own decodeWhoop5HistoricalV16, which the Kotlin rule never inventories because it matches `const val` only, and a Set-valued or object-valued local cannot be `const` in Kotlin at all. There is nothing to pair and nothing to change in either decoder."
+    },
+    {
+      "type": "platform_specific",
+      "kind": "add-unpaired-constant",
+      "identity": "swift\u0000Packages/StrandAnalytics/Sources/StrandAnalytics/SleepStager.swift::bandAwakeStates",
+      "identity_sha256": "789dc40f4381a5e4c78990f237591229302fb186fcc236bb1a8ed4dd19e58451",
+      "platform": "swift",
+      "rationale": "Kotlin mirrors this band sleep_state set as `internal val bandAwakeStates: Set<Int> = setOf(0, 3)` in SleepStager.kt. A Set is not a `const val`, so the constant rule cannot pair the two; SleepBandWakeTrimTests and SleepBandWakeTrimTest pin the same trims on both platforms."
+    },
+    {
+      "type": "platform_specific",
+      "kind": "add-unpaired-constant",
+      "identity": "swift\u0000Packages/WhoopProtocol/Sources/WhoopProtocol/ChargerState.swift::kindPrefixes",
+      "identity_sha256": "8964a5db294417963af94edf0388f6a5cbfd8ee5414979149037960dbda40743",
+      "platform": "swift",
+      "rationale": "Kotlin mirrors the charger-edge kind prefixes as `val kindPrefixes = listOf(...)` in protocol/ChargerState.kt. A List is not a `const val`, so the constant rule cannot pair the two; each platform's store test asserts its literal SQL filter covers every prefix."
+    },
+    {
+      "type": "out_of_scope_twin",
+      "kind": "add-unpaired-function",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/analytics/EnergyAnchors.kt::anchored/5#1",
+      "identity_sha256": "0212062585f5ac01011dee4c7385f325fb60ae9d52352792f18b8c54bc403b1b",
+      "platform": "kotlin",
+      "rationale": "Reads the awake resting-HR and VO2max anchors once per pass for the day-energy estimate. Swift does the same in app-layer Repository.refreshEnergyAnchors.",
+      "twin_path": "Strand/Data/Repository+Stress.swift"
+    },
+    {
+      "type": "out_of_scope_twin",
+      "kind": "add-unpaired-function",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/analytics/EnergyAnchors.kt::apply/3#1",
+      "identity_sha256": "8d8bd91b721d0d1860b38a053373d0e50dbce00458750ebbec88d31d4f6c966c",
+      "platform": "kotlin",
+      "rationale": "Copies the awake resting-HR and VO2max anchors onto the scoring profile. Swift does the same in app-layer Repository.withEnergyAnchors.",
+      "twin_path": "Strand/Data/Repository+Stress.swift"
+    },
+    {
+      "type": "out_of_scope_twin",
+      "kind": "add-unpaired-function",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/analytics/EnergyAnchors.kt::awakeAnchor/1#1",
+      "identity_sha256": "18ad579d7e0e33fc45ce66b6f5e4e034347844ac197ffb4003eefa20cb3a0809",
+      "platform": "kotlin",
+      "rationale": "Rounds the median prior wake floor to the whole-bpm awake anchor. Swift rounds the same value inside app-layer Repository.refreshEnergyAnchors.",
+      "twin_path": "Strand/Data/Repository+Stress.swift"
+    },
+    {
+      "type": "out_of_scope_twin",
+      "kind": "add-unpaired-function",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/analytics/NightScoreRows.kt::accuracyInputs/3#1",
+      "identity_sha256": "8f5aa2eb737294f101ac3b5eae249589bc9653d767beb2817b53450ac3a89669",
+      "platform": "kotlin",
+      "rationale": "Builds the active_energy_kcal row under the same day definition as the row's total. Swift appends that row inline in app-layer IntelligenceEngine pass 2 via DayCycleIntelligenceIntegration.activeEnergy.",
+      "twin_path": "Strand/Data/IntelligenceEngine.swift"
+    },
+    {
+      "type": "out_of_scope_twin",
+      "kind": "add-unpaired-function",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/analytics/PhysiologicalStepCycleEngine.kt::loadCacheKey/8#1",
+      "identity_sha256": "01eaca6b8864376cb2686a4b78cac00aa0184e65955409b143f1ea79e84c6e15",
+      "platform": "kotlin",
+      "rationale": "The Swift cycle load cache key is built inline in the excluded app layer; this points to its role twin without claiming byte identity. Arity grew by the energy anchors that now key a cycle's load.",
+      "twin_path": "Strand/Data/DayCycleIntelligenceIntegration.swift"
+    },
+    {
+      "type": "platform_specific",
+      "kind": "add-unpaired-function",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/analytics/WorkoutDetector.kt::z2plus/1#1",
+      "identity_sha256": "0bb3413bd2940682a5d6061299a6845a82d14a84e6d21b4dbf04f046ced226a4",
+      "platform": "kotlin",
+      "rationale": "Kotlin names the zone-2-and-above share as a local function because two gates read it. Swift computes the same sum inline as a local `let z2plus` in WorkoutDetector.detect, which the function inventory does not list."
+    },
+    {
+      "type": "platform_specific",
+      "kind": "add-unpaired-function",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/data/WhoopDao.kt::chargerEdgesBefore/2#1",
+      "identity_sha256": "b0be0c0076ca60d5c6c54b58bf26b97ce9b4eaaaaa68f5cffc1e5affbbf921b6",
+      "platform": "kotlin",
+      "rationale": "Room @Query DAO method reading the newest charger edges before a battery batch. The Swift store issues the same SQL inline in WhoopStore ChargerStateStore.withChargerState rather than through a DAO."
+    },
+    {
+      "type": "platform_specific",
+      "kind": "add-unpaired-function",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/data/WhoopDao.kt::chargerEdgesBetween/3#1",
+      "identity_sha256": "6b124cf1cb9b5baa16e534bff0e640c90a7e09410469640c78cec6ee6ff9d7d5",
+      "platform": "kotlin",
+      "rationale": "Room @Query DAO method reading the charger edges inside a battery batch. The Swift store issues the same SQL inline in WhoopStore ChargerStateStore.withChargerState rather than through a DAO."
+    },
+    {
+      "type": "platform_specific",
+      "kind": "add-unpaired-function",
+      "identity": "swift\u0000Packages/WhoopStore/Sources/WhoopStore/ChargerStateStore.swift::edges/2#1",
+      "identity_sha256": "6492a1855f2ec69263d70ed6e39ba9df11519bac8eb325dc6d38d56c9ca81504",
+      "platform": "swift",
+      "rationale": "Local GRDB row-fetch helper inside withChargerState. Kotlin reads the same rows through the Room DAO methods chargerEdgesBefore and chargerEdgesBetween, so there is no Kotlin function of this shape."
+    },
+    {
+      "type": "platform_specific",
+      "kind": "add-unpaired-property",
+      "identity": "kotlin\u0000android/app/src/main/java/com/noop/analytics/WorkoutAutoSave.kt::save@property#1",
+      "identity_sha256": "8441204e7a91e15f43eb2fcc73e79556351db3c1b51bcaae61064aeb80c6e5dc",
+      "platform": "kotlin",
+      "rationale": "Kotlin models the auto-save verdict as a data class with a nullable token and this derived flag. Swift models it as the enum cases `.save(token:)` and `.suggest`, so the flag is the case itself."
     }
   ]
 }
