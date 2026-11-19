@@ -154,6 +154,16 @@ extension ReadOnlyDB {
         return out
     }
 
+    /// Strap events in `[from, to]`, kind and timestamp only. Section H pairs the WRIST_OFF/ON ones into
+    /// off-wrist intervals exactly as `IntelligenceEngine` does before it calls `detectSleep`.
+    func events(device: String, from: Int, to: Int) throws -> [WhoopEvent] {
+        var out: [WhoopEvent] = []
+        try query("SELECT ts, kind FROM event WHERE deviceId = '\(device)' AND ts >= \(from) AND ts <= \(to) ORDER BY ts") { s in
+            out.append(WhoopEvent(ts: ReadOnlyDB.int(s, 0), kind: ReadOnlyDB.str(s, 1) ?? "", payload: [:]))
+        }
+        return out
+    }
+
     /// Mean / min HR over a window — the stratifier for the supplement-HR hypothesis.
     func hrStats(device: String, from: Int, to: Int) throws -> (mean: Double, n: Int, p10: Double)? {
         var v: [Double] = []

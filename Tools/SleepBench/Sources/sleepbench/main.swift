@@ -6,7 +6,7 @@ import WhoopProtocol
 // independent reference the database carries.
 //
 // USAGE:  sleepbench --db /path/to/whoop.sqlite [--device my-whoop-noop] [--pad 3600] [--csv out.csv]
-//                     [--exclude <startTs,…>]
+//                     [--exclude <startTs,…>] [--reference <csv> [--reference-only] [--tz <id>]]
 //
 // The database is never written to and never lives in this repository. Pass a COPY; never point this at
 // a device's live database.
@@ -30,6 +30,12 @@ struct Args {
     /// is to name it ONCE and pass the same `--exclude` list to every build being compared. Excluding by
     /// explicit timestamp keeps the set frozen; excluding by "matches this build's V2" would not.
     var exclude: Set<Int> = []
+    /// Section H: an external `start,end,stage` hypnogram CSV to score NOOP's nights against.
+    var reference: String?
+    var tz = TimeZone.current
+    var replay = true
+    var referenceOnly = false
+    var referenceOut: String?
 }
 var a = Args()
 var it = CommandLine.arguments.dropFirst().makeIterator()
@@ -41,6 +47,16 @@ while let k = it.next() {
     case "--pad": a.pad = Int(it.next() ?? "") ?? a.pad
     case "--csv": a.csv = it.next()
     case "--exclude": a.exclude = Set((it.next() ?? "").split(separator: ",").compactMap { Int($0) })
+    case "--reference": a.reference = it.next()
+    case "--reference-only": a.referenceOnly = true
+    case "--reference-out": a.referenceOut = it.next()
+    case "--no-replay": a.replay = false
+    case "--tz":
+        let id = it.next() ?? ""
+        guard let tz = TimeZone(identifier: id) else {
+            FileHandle.standardError.write(Data("unknown time zone \(id)\n".utf8)); exit(2)
+        }
+        a.tz = tz
     default: FileHandle.standardError.write(Data("unknown argument \(k)\n".utf8)); exit(2)
     }
 }
@@ -49,8 +65,15 @@ guard !a.db.isEmpty else {
     usage: sleepbench --db <sqlite> [--device <id>] [--stream-device <id>] [--pad <s>] [--csv <path>]
                       [--exclude <startTs,startTs,…>]
 
+                      [--reference <csv> [--reference-only] [--no-replay] [--tz <id>] [--reference-out <csv>]]
+
       --exclude   session startTs values held out of section E's calibration reference set. Pass the SAME
                   list to every build in a before/after comparison; section E names the candidates.
+      --reference an external hypnogram, `start,end,stage` per row (unix s; wake/light|core/deep/rem/
+                  asleep/inbed). Section H scores the stored nights AND a replay of detection + staging by
+                  this build against it: onset/offset/TST error, stage minutes, 4-class and sleep/wake kappa.
+      --reference-only   skip sections 0-G.   --no-replay   score the stored rows only.
+      --tz        IANA zone naming nights and local midnights (default: this machine's).
     """)
     exit(2)
 }
@@ -58,6 +81,11 @@ guard !a.db.isEmpty else {
 let db = try ReadOnlyDB(path: a.db)
 let rows = try db.sessions(device: a.device)
 guard !rows.isEmpty else { print("no sessions for device \(a.device)"); exit(1) }
+if let ref = a.reference {
+    try runReferenceReport(db: db, opts: ReferenceOptions(path: ref, tz: a.tz, replay: a.replay, out: a.referenceOut),
+                           sessionDevice: a.device, streamDevice: a.streamDevice, storedRows: rows)
+    if a.referenceOnly { exit(0) }
+}
 // Which `userEdited` rows carry a HUMAN-AUTHORED hypnogram rather than machine stages re-derived over a
 // human-corrected window. Only the former can serve as a stage-level reference.
 let stageLocked = try db.stageLockedStarts(device: a.device).subtracting(a.exclude)

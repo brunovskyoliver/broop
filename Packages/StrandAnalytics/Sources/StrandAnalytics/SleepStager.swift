@@ -1314,6 +1314,40 @@ public enum SleepStager {
         return p
     }
 
+    /// Band sleep_state values that mean the strap itself scored the wearer awake: 0 ("wake") and 3 ("up").
+    /// 1 ("still") is ambiguous and 2 is asleep; neither counts.
+    static let bandAwakeStates: Set<Int> = [0, 3]
+    /// Shortest terminal band-awake run, in minutes inside the night, that ends the night early. Below this
+    /// the trim would sit inside the few minutes the band itself lags a real awakening.
+    static let terminalBandWakeMinMin = 10
+
+    /// The night ended where the strap's own band says the wearer woke, when it says so for good.
+    ///
+    /// Awake and still in bed after the final awakening reads as sleep to the gravity spine, and V2 stages it
+    /// REM: `motionQuiescent` holds the raised HR back from the awake emission while the REM emission and the
+    /// late-night clock ramp both gain from it. The band switches 2 → 3 at the awakening and stays awake until
+    /// the run ends, so the night is cut at the first sample of that TERMINAL awake run when every in-run band
+    /// sample after the last non-awake one reads awake, the run lasts at least `terminalBandWakeMinMin`, and
+    /// no gap in it (or to the run end) reaches `unobservedGapMin`. A mid-night awakening the band returns
+    /// from to asleep is not terminal and is untouched, and so is a snooze the band keeps scoring asleep.
+    /// A run with no non-awake band sample is left to the other gates, and no band stream is a no-op.
+    /// Kotlin twin: `SleepStager.offsetTrimmedToBandWake`.
+    static func offsetTrimmedToBandWake(_ p: Period, bandSleepState: [(ts: Int, state: Int)]) -> Period {
+        let inside = bandSleepState.filter { $0.ts >= p.start && $0.ts <= p.end }.sorted { $0.ts < $1.ts }
+        guard let lastNonAwake = inside.lastIndex(where: { !bandAwakeStates.contains($0.state) }),
+              lastNonAwake + 1 < inside.count else { return p }
+        let cut = inside[lastNonAwake + 1].ts
+        guard p.end - cut >= terminalBandWakeMinMin * 60 else { return p }
+        let gapS = unobservedGapMin * 60
+        var prev = cut
+        for s in inside[(lastNonAwake + 1)...] {
+            if s.ts - prev >= gapS { return p }
+            prev = s.ts
+        }
+        guard p.end - prev < gapS else { return p }
+        return Period(stage: p.stage, start: p.start, end: cut)
+    }
+
     /// `stages` with every interior HR-less stretch cut out. A hole is the existing notation for time
     /// never observed (`HypnogramCoverage`), so it is neither sleep nor wake to anything downstream.
     static func carvingUnobservedGaps(_ stages: [StageSegment], sortedHR hr: [HRSample]) -> [StageSegment] {
@@ -1644,6 +1678,13 @@ public enum SleepStager {
                 continue
             }
             p = onsetTrimmedToHRDrop(trimmedToHeartbeats(p, sortedHR: hrS), sortedHR: hrS)
+            let endBeforeBandTrim = p.end
+            p = offsetTrimmedToBandWake(p, bandSleepState: bandSleepState)
+            if p.end != endBeforeBandTrim {
+                traceSink?(GateTrace.runLine(index: runIndex, startTs: p.start, endTs: p.end,
+                    verdict: .kept, gate: "bandWakeTrim",
+                    detail: "trimmedMin=\((endBeforeBandTrim - p.end) / 60) minRunMin=\(terminalBandWakeMinMin)"))
+            }
             if (p.end - p.start) <= minSleepS {
                 traceSink?(GateTrace.runLine(index: runIndex, startTs: p.start, endTs: p.end,
                     verdict: .dropped, gate: "unobservedTrim",
