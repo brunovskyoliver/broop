@@ -6,12 +6,22 @@ import com.noop.data.DailyMetric
 
 /** Stored witnesses from the nightly pass, kept outside the scoring coroutine's bytecode budget. */
 internal object NightScoreRows {
-    fun accuracyInputs(computedId: String, result: DayResult): List<MetricSeriesRow> = buildList {
+    /**
+     * `active_energy_kcal` follows the day definition of the row's total: the sleep-onset cycle once cycles
+     * are established, else the calendar day. Without [cycle] it is the calendar figure.
+     */
+    fun accuracyInputs(
+        computedId: String,
+        result: DayResult,
+        cycle: PhysiologicalStepCycleEngine.Result? = null,
+    ): List<MetricSeriesRow> = buildList {
         result.hrCoverage?.let { coverage ->
             add(MetricSeriesRow(computedId, result.daily.day, "hr_day_coverage", coverage.fraction))
             add(MetricSeriesRow(computedId, result.daily.day, "hr_day_longest_gap_s", coverage.longestGapSeconds.toDouble()))
         }
-        result.activeEnergyKcal?.let { add(MetricSeriesRow(computedId, result.daily.day, "active_energy_kcal", it)) }
+        val active = if (cycle == null) result.activeEnergyKcal
+            else DayCycleIntelligenceIntegration.activeEnergy(cycle, result.daily.day, result.activeEnergyKcal)
+        active?.let { add(MetricSeriesRow(computedId, result.daily.day, "active_energy_kcal", it)) }
     }
 
     fun computedDay(daily: DailyMetric): IntelligenceEngine.Computed = IntelligenceEngine.Computed(

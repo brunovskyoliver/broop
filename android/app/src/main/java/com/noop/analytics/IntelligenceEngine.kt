@@ -545,7 +545,9 @@ object IntelligenceEngine {
                     stepsMotionCachePersisted = raw
                 }
             }
-            val (out, healed) = analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
+            // Read once per pass, like Swift `refreshEnergyAnchors`, so both passes below score one profile.
+            val anchoredProfile = EnergyAnchors.anchored(repo, importedDeviceId, profile, nowSeconds)
+            val (out, healed) = analyzeRecentOnCpu(repo, anchoredProfile, maxDays, importedDeviceId, maxHROverride,
                 nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
                 recoveryEpoch, diag, useExperimentalSleepV2, useMotionAwareWake, sleepTraceSink, recoveryTraceSink,
                 stepsTraceSink, universalSink, workoutsTraceSink, hrvTraceSink, deepHrvWindow,
@@ -556,7 +558,7 @@ object IntelligenceEngine {
             // detections weren't banked yet), so its survivor can differ from the heal's. ONE bounded re-pass
             // re-scores the window against the cleaned store; its own heal then finds nothing (the duplicates
             // are gone), so this can never loop. Mirrors the Swift pendingForcedRescore re-arm.
-            else analyzeRecentOnCpu(repo, profile, maxDays, importedDeviceId, maxHROverride,
+            else analyzeRecentOnCpu(repo, anchoredProfile, maxDays, importedDeviceId, maxHROverride,
                 nowSeconds, ownerSource, manualStepCoefficient, persistStepsCalibration, baselineEpoch,
                 recoveryEpoch, diag, useExperimentalSleepV2, useMotionAwareWake, sleepTraceSink, recoveryTraceSink,
                 stepsTraceSink, universalSink, workoutsTraceSink, hrvTraceSink, deepHrvWindow,
@@ -1697,7 +1699,7 @@ object IntelligenceEngine {
             nowSeconds, profile, maxHROverride)
         restRows.addAll(stressRest.points)
         for (res in scoredNights) {
-            restRows.addAll(NightScoreRows.accuracyInputs(computedId, res))
+            restRows.addAll(NightScoreRows.accuracyInputs(computedId, res, physiologicalSteps))
             // #299: scope the edits to THIS day before folding. A userEdited row / hand-logged nap belongs
             // to exactly ONE day — the day its night ENDS on, matching the daily's end-day bucket
             // (AnalyticsEngine's `matched` filters sleep sessions by end-day). endTs is stable under a

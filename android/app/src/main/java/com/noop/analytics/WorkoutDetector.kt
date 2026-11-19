@@ -715,16 +715,24 @@ object Calories {
      * full gross-exercise rate to every elevated second and over-counts by ~1000+ kcal
      * (community "Calories too high"). The bout path keeps the 0.30 detector fraction —
      * Keytel is appropriate for a real detected/manual workout — but the day path raises the
-     * gate to 50% HRR so the gross rate only applies at genuine exercise-level HR.
+     * gate to 50% HRR so the gross rate only applies at genuine exercise-level HR. Used only when no awake
+     * resting HR is known ([UserProfile.awakeRestingHR]); see [dayActiveAwakeHRRFraction].
      */
     const val dayActiveHRRFraction: Double = 0.50
     /**
-     * Longest gap over which one daily HR reading may carry RESTING energy.
-     *
-     * Resting metabolism continues across a dropout, so a reading may carry the BMR rate into the
-     * gap — but only so far, or a disconnected evening would bank a full night of resting kcal that
-     * was never observed. ACTIVE energy is capped separately and much tighter, at the inferred
-     * cadence (see [estimateDayEnergy]): a gap is evidence of a missing sensor, never of exercise.
+     * Whole-day active gate once an awake resting HR is known: the flex point of the Flex-HR method
+     * (Spurr et al. 1988; Ceesay et al. 1989), below which heart rate does not track energy and resting
+     * energy is used. 30% of the heart-rate reserve above the AWAKE resting HR is the ACSM lower bound
+     * of light-intensity activity (Garber et al. 2011, Table 4: 2 METs, 57% HRmax), the lowest stage
+     * Keytel 2005 was fitted on. The sleeping floor is not a resting HR for this purpose: 50% above it
+     * sat near 121 bpm on real data (62% HRmax), so ordinary walking credited nothing and a 6,400-step
+     * day read 6 kcal active against 409 on an Apple Watch. Twin of Swift `Calories.dayActiveAwakeHRRFraction`.
+     */
+    const val dayActiveAwakeHRRFraction: Double = 0.30
+    /**
+     * Longest gap one reading may count toward `observedSeconds`, the day's coverage figure. Resting energy
+     * is BMR over the credited span whatever the strap saw, and ACTIVE energy is capped tighter, at the
+     * inferred cadence (see [estimateDayEnergy]): a gap is evidence of a missing sensor, never of exercise.
      */
     const val dayMaxObservedGapS: Double = 60.0
     const val dayMaxObservedSpanS: Double = 86_400.0
@@ -742,6 +750,14 @@ object Calories {
         val bmr = c.restingAlpha + c.restingWeight * weightKg + c.restingHeight * heightM - c.restingAge * age
         return maxOf(0.0, bmr) / 86_400.0
     }
+
+    /**
+     * Resting HR while awake: the Stress Monitor's own wake reference, the median of the prior days' wake
+     * floors. A single day's floor is never used (real data stored 120.7 bpm for a day), so too little
+     * history gives null rather than one day's value. Twin of Swift `Calories.awakeRestingHR`.
+     */
+    fun awakeRestingHR(priorFloors: List<Double?>): Double? =
+        StressMonitor.wakeReference(priorFloors, todayFloor = null)?.floorHR
 
     /**
      * Uth–Sørensen VO2max estimate (ml·kg⁻¹·min⁻¹) ≈ 15.3 · HRmax / HRrest. Returns null when no
@@ -836,33 +852,36 @@ object Calories {
 
     /**
      * APPROXIMATE whole-day resting + active energy estimate from the full day's HR
-     * samples. Resting BMR is integrated once over capped, supported sample intervals,
-     * independent of HR cadence. Supported high-HR intervals then add only the Keytel
-     * energy ABOVE that resting floor.
+     * samples. Supported high-HR intervals add only the Keytel energy ABOVE the resting floor.
      *
-     * The day path uses [dayActiveHRRFraction] (50% HRR), NOT the 30% the bout detector
-     * uses ([activeHRRFraction]). The Keytel 2005 equation is validated for genuine
-     * EXERCISE HR; at 30% the gate falls to ~94 bpm for a typical user, so ordinary
-     * low-intensity daytime HR (walking, stairs, standing) credited the full
-     * gross-exercise rate across the whole day and over-counted by ~1000+ kcal
-     * (community "Calories too high"). The 50% gate keeps the gross rate for genuine
-     * exercise-level HR only; the bout path is UNCHANGED — Keytel is appropriate there,
-     * on a real detected/manual workout.
+     * Without an awake resting HR the gate is [dayActiveHRRFraction] (50% HRR above the caller's
+     * resting HR). At 30% of the reserve above the SLEEPING floor the gate fell to ~94 bpm and
+     * ordinary daytime HR over-counted by ~1000+ kcal (community "Calories too high"). Measured from
+     * the awake resting HR, 30% is the flex point instead (see [dayActiveAwakeHRRFraction]).
      *
      * Cadence is inferred from the median positive timestamp gap and capped at
-     * [dayMaxObservedGapS]. Each sample carries resting energy, and a high-HR sample carries
-     * active energy, to the next sample for at most that cap. This can credit up to 60 s
-     * instead of the old flat 1 s for a reading on a gappy day, but never a whole disconnect.
-     * Thus a 30 s sparse stream and a 1 Hz stream covering the same activity produce
-     * comparable energy.
+     * [dayMaxObservedGapS]. A high-HR sample carries active energy to the next sample for at
+     * most that cadence, never a whole disconnect, so a 30 s sparse stream and a 1 Hz stream
+     * covering the same activity produce comparable energy.
+     *
+     * Resting energy is BMR over [creditedSeconds] (the whole span when null, whatever the strap saw):
+     * metabolism does not stop when the strap comes off. `observedSeconds` reports coverage and does not
+     * scale either figure.
+     *
+     * With [UserProfile.awakeRestingHR] the gate is [dayActiveAwakeHRRFraction] above that awake HR, and
+     * the Keytel fitness term reads [UserProfile.vo2max], else Uth on the awake HR. Uth 2004 measured
+     * resting HR awake and supine, so the sleeping floor overstated VO2max by about half on real data (64
+     * against a measured 42 ml/kg/min). Without an awake HR the day keeps the old inputs:
+     * [dayActiveHRRFraction] above the caller's resting HR and Uth on it.
      *
      * This is an on-device estimate from heart rate alone — NOT laboratory calorimetry,
-     * NOT Apple/WHOOP cloud parity, NOT medical advice.
+     * NOT Apple/WHOOP cloud parity, NOT medical advice. Twin of Swift `Calories.estimateDayEnergy`.
      *
      * @param hrSamples the whole day's timestamped HR samples.
-     * @param profile weight/height/age/sex for the BMR + active-EE coefficients.
+     * @param profile weight/height/age/sex for the BMR + active-EE coefficients, plus the energy anchors.
      * @param hrmax effective HRmax (bpm); null → 220.
      * @param restingHR resting HR (bpm); null → 60.
+     * @param creditedSeconds seconds of BMR to credit; null → [maxSpanSeconds].
      */
     fun estimateDayEnergy(
         hrSamples: List<HrSample>,
@@ -870,6 +889,7 @@ object Calories {
         hrmax: Double?,
         restingHR: Double?,
         maxSpanSeconds: Double = 86_400.0,
+        creditedSeconds: Double? = null,
     ): DayEnergyEstimate {
         if (hrSamples.isEmpty()) return DayEnergyEstimate(0.0, 0.0, 0.0)
 
@@ -879,15 +899,17 @@ object Calories {
         val coeffs = resolveCoeffs(profile.sex)
 
         val effHRmax = hrmax ?: 220.0
-        val effResting = restingHR ?: 60.0
-        // Day-path gate is HIGHER than the bout detector's: only genuine exercise-level HR
-        // gets the Keytel gross rate (see [dayActiveHRRFraction]).
-        val activeThreshold = effResting + dayActiveHRRFraction * (effHRmax - effResting)
+        val awake = profile.awakeRestingHR?.takeIf { it > 0.0 }
+        val referenceHR = awake ?: restingHR
+        val effResting = referenceHR ?: 60.0
+        val gateFraction = if (awake == null) dayActiveHRRFraction else dayActiveAwakeHRRFraction
+        val activeThreshold = effResting + gateFraction * (effHRmax - effResting)
 
         val restingRate = restingKcalPerS(coeffs, weightKg, heightCm, age)
-        // Fitness anchor (Uth VO2max) when a resting HR is known → Keytel fitness-adjusted rate; null
-        // restingHR → base model, unchanged. Constant across the day.
-        val vo2max = vo2maxFor(effHRmax, restingHR)
+        // Fitness anchor for the Keytel fitness-adjusted rate, constant across the day. No resting HR at
+        // all → the base model. A measured VO2max is used only beside an awake HR, so a day without one
+        // is scored exactly as before.
+        val vo2max = (if (awake == null) null else profile.vo2max) ?: vo2maxFor(effHRmax, referenceHR)
 
         // Ties are REACHABLE: hrSample is keyed (deviceId, ts) and the day feed unions devices, so a
         // two-strap day carries two readings for the same second. Only the LAST of a tied run gets the
@@ -916,7 +938,7 @@ object Calories {
                 total + minOf(gap, dayMaxObservedGapS)
             },
         )
-        val restingKcal = restingRate * observedSeconds
+        val restingKcal = restingRate * maxOf(0.0, creditedSeconds ?: maxSpanSeconds)
 
         var activeKcal = 0.0
         for (i in ordered.indices) {

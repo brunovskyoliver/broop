@@ -316,18 +316,42 @@ final class ActivityLoadAuditTests: XCTestCase {
         XCTAssertNotEqual(awakeOnly.cacheKey, base.cacheKey)
     }
 
-    func testDayActiveKeepsTheExerciseGateAndIgnoresTheEnergyAnchors() {
+    func testDayActiveGateMovesToTheFlexPointOnlyWithAnAwakeRestingHR() {
         var p = UserProfile(weightKg: 66, heightCm: 170, age: 19, sex: "male")
-        // Gate at 48 + 0.5 * (195 - 48) = 121.5 bpm.
         let walk = (0..<3_600).map { HRSample(ts: 1_000 + $0, bpm: 110) }
         let lift = (0..<3_600).map { HRSample(ts: 1_000 + $0, bpm: 130) }
+        let sitting = (0..<3_600).map { HRSample(ts: 1_000 + $0, bpm: 95) }
         func active(_ h: [HRSample]) -> Double {
             Calories.estimateDayEnergy(h, profile: p, hrmax: 195, restingHR: 48).activeKcal
         }
+        let bmrPerS = Calories.restingKcalPerS(Calories.male, weightKg: 66, heightCm: 170, age: 19)
+        // Keytel 2005 fitness-adjusted male equation, kJ/min → kcal/s, minus BMR, over one hour.
+        func keytelNetHour(_ bpm: Double, vo2: Double) -> Double {
+            ((0.634 * bpm + 0.404 * vo2 + 0.394 * 66 + 0.271 * 19 - 95.7735) / 251.04 - bmrPerS) * 3_600
+        }
+
+        // No awake HR: the old gate, 48 + 0.5 * (195 - 48) = 121.5 bpm, and Uth on the sleeping floor.
         XCTAssertEqual(active(walk), 0)
-        let plain = active(lift)
-        XCTAssertGreaterThan(plain, 0)
+        XCTAssertEqual(active(lift), keytelNetHour(130, vo2: 15.3 * 195 / 48), accuracy: 1e-6)
+
+        // Awake HR 64: the gate is 64 + 0.3 * (195 - 64) = 103.3 bpm and the stored VO2max is read.
         p.awakeRestingHR = 64; p.vo2max = 41.86
-        XCTAssertEqual(active(lift), plain)
+        XCTAssertEqual(active(sitting), 0, "below the flex point the day earns BMR only")
+        XCTAssertEqual(active(walk), keytelNetHour(110, vo2: 41.86), accuracy: 1e-6)
+        XCTAssertEqual(active(lift), keytelNetHour(130, vo2: 41.86), accuracy: 1e-6)
+
+        // Awake HR without a stored VO2max: Uth reads the awake value, not the sleeping floor.
+        p.vo2max = nil
+        XCTAssertEqual(active(walk), keytelNetHour(110, vo2: 15.3 * 195 / 64), accuracy: 1e-6)
+        // Resting energy does not depend on the anchor.
+        XCTAssertEqual(Calories.estimateDayEnergy(walk, profile: p, hrmax: 195, restingHR: 48).restingKcal,
+                       bmrPerS * 86_400, accuracy: 1e-6)
+    }
+
+    func testDayActiveGateNeverFiresWhenTheAwakeHRIsAtOrAboveHRmax() {
+        var p = UserProfile(weightKg: 66, heightCm: 170, age: 19, sex: "male")
+        p.awakeRestingHR = 200
+        let hard = (0..<600).map { HRSample(ts: 1_000 + $0, bpm: 190) }
+        XCTAssertEqual(Calories.estimateDayEnergy(hard, profile: p, hrmax: 195, restingHR: 48).activeKcal, 0)
     }
 }

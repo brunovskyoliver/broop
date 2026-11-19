@@ -46,6 +46,14 @@ data class UserProfile(
      * (the body term cancels out of the age formula). Default param so existing call-sites compile.
      */
     val waistCm: Double = 0.0,
+    /**
+     * Energy estimates only: resting HR while awake ([Calories.awakeRestingHR]). When null, the day-energy
+     * gate falls back to the resting HR its caller passes, which in the app is the sleeping floor. Effort
+     * and Charge never read this. Twin of Swift `UserProfile.awakeRestingHR`.
+     */
+    val awakeRestingHR: Double? = null,
+    /** Energy estimates only: a measured VO2max (imported). When null, Uth estimates one. */
+    val vo2max: Double? = null,
 ) {
     /**
      * Every stored field, for a cache key that must change when the profile does (the per-cycle load cache,
@@ -55,7 +63,8 @@ data class UserProfile(
      */
     val cacheKey: String
         get() = "w=${weightKg.toRawBits()},h=${heightCm.toRawBits()},a=${age.toRawBits()},s=$sex," +
-            "t=${stepTicksPerStep.toRawBits()},waist=${waistCm.toRawBits()}"
+            "t=${stepTicksPerStep.toRawBits()},waist=${waistCm.toRawBits()}," +
+            "ar=${awakeRestingHR?.toRawBits() ?: 0},v=${vo2max?.toRawBits() ?: 0}"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
