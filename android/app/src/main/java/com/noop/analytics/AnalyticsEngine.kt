@@ -958,6 +958,8 @@ object AnalyticsEngine {
             // the day it sits inside, which is a worse inconsistency than either method.
             effortMethod = effortMethod,
             funnel = { detectionFunnel = it },
+            // The strap's gait tags pass a quiet-arm walk and cut a walk off a lift (Swift twin).
+            steps = daySteps ?: steps,
         )
 
         // ── Per-bout enrichment + advisory classification (2026-09-21) ────────

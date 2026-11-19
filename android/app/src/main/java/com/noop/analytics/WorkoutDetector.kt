@@ -2,6 +2,7 @@ package com.noop.analytics
 
 import com.noop.data.GravitySample
 import com.noop.data.HrSample
+import com.noop.data.StepSample
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.min
@@ -195,6 +196,13 @@ object WorkoutDetector {
          * "the detector is dead" from "the detector found walks, which used to be dropped".
          */
         var keptActivity: Int = 0,
+        /** Runs that failed both intensity bars as a whole and were retried as their elevated cores or cut
+         *  at their walking streaks instead. Such a run is not counted in [droppedLowIntensity]. */
+        var splitRuns: Int = 0,
+        /** Of [kept], how many sessions came from those cores or pieces. */
+        var splitKept: Int = 0,
+        /** Of [splitRuns], how many yielded no session at all: every core or piece failed its own bar. */
+        var splitDropped: Int = 0,
     )
 
     /**
@@ -210,7 +218,8 @@ object WorkoutDetector {
             "active=${f.active} runs=${f.runs} bridged=${f.bridged} " +
             "longestRunS=${f.longestRunS} meanRunS=${f.meanRunS} " +
             "short=${f.droppedShort} noHR=${f.droppedNoHR} lowIntensity=${f.droppedLowIntensity} " +
-            "kept=${f.kept} activity=${f.keptActivity}"
+            "kept=${f.kept} activity=${f.keptActivity} split=${f.splitRuns} splitKept=${f.splitKept} " +
+            "splitDropped=${f.splitDropped}"
 
     /**
      * #1545: how much of [start]..[end] the HR sensor actually covered, as a percentage of
@@ -402,6 +411,122 @@ object WorkoutDetector {
         return merged
     }
 
+    /** Activity-class values the 5/MG strap uses for gait: 1 = walk, 2 = run (0 = still, null = 4.0). */
+    internal fun isGait(activityClass: Int?): Boolean = activityClass == 1 || activityClass == 2
+
+    /**
+     * The stretches of a run where HR sits above [floor], as (firstTs, lastTs) spans. Consecutive
+     * above-floor samples join while they are at most [bridgeGapS] apart, so the dips of a sets-and-rest
+     * session stay inside one core. [hrSeries] must be sorted by ts. Twin of Swift `elevatedCores`.
+     */
+    internal fun elevatedCores(hrSeries: List<HrSample>, floor: Double): List<Pair<Long, Long>> {
+        val cores = ArrayList<Pair<Long, Long>>()
+        var cur: Pair<Long, Long>? = null
+        for (s in hrSeries) {
+            if (s.bpm.toDouble() <= floor) continue
+            val c = cur
+            cur = if (c != null && (s.ts - c.second).toDouble() <= bridgeGapS) {
+                c.first to s.ts
+            } else {
+                if (c != null) cores.add(c)
+                s.ts to s.ts
+            }
+        }
+        cur?.let { cores.add(it) }
+        return cores
+    }
+
+    /** Activity-tier bar for a piece [gaitPieces] cut from a bout that already qualified (Swift twin). */
+    internal const val pieceElevatedFrac = 0.25
+    /** A minute counts as walking when at least this many of its seconds carry a gait tag. */
+    internal const val gaitMinuteTicks = 45
+    /** A walking streak must last this long to split a bout; shorter ones are moves between sets. */
+    internal const val gaitStreakMinS = 300L
+
+    /**
+     * Cut [start]..[end] at the edges of its sustained walking streaks, or null when there is nothing to
+     * cut. Byte-for-byte twin of Swift `gaitPieces` (see its doc for the rules). [gaitTs] must be sorted.
+     */
+    internal fun gaitPieces(
+        start: Long, end: Long, gaitTs: List<Long>,
+        isWalkPace: (Long, Long) -> Boolean = { _, _ -> true },
+    ): List<Pair<Long, Long>>? {
+        if (gaitTs.isEmpty() || end - start < gaitStreakMinS) return null
+        val n = ((end - start) / 60 + 1).toInt()
+        val ticks = IntArray(n)
+        var i = gaitTs.indexOfFirst { it >= start }.let { if (it < 0) gaitTs.size else it }
+        while (i < gaitTs.size && gaitTs[i] <= end) { ticks[((gaitTs[i] - start) / 60).toInt()]++; i++ }
+        val walking = BooleanArray(n) { ticks[it] >= gaitMinuteTicks }
+        for (m in 1 until maxOf(1, n - 1)) if (!walking[m] && walking[m - 1] && walking[m + 1]) walking[m] = true
+        var streaks = ArrayList<Pair<Int, Int>>()
+        var m = 0
+        while (m < n) {
+            if (!walking[m]) { m++; continue }
+            var e = m
+            while (e + 1 < n && walking[e + 1]) e++
+            if ((e - m + 1) * 60 >= gaitStreakMinS) streaks.add(m to e)
+            m = e + 1
+        }
+        if (streaks.isEmpty()) return null
+        val joinGapMin = activityMinMin.toInt()
+        val joined = arrayListOf(streaks[0])
+        for (k in 1 until streaks.size) {
+            val s = streaks[k]
+            val last = joined[joined.size - 1]
+            if (s.first - last.second - 1 < joinGapMin) joined[joined.size - 1] = last.first to s.second else joined.add(s)
+        }
+        streaks = ArrayList(joined.filter { isWalkPace(start + it.first * 60L, minOf(end, start + it.second * 60L + 59)) })
+        if (streaks.isEmpty()) return null
+        val cuts = arrayListOf(0L)
+        for ((a, b) in streaks) { cuts.add(a * 60L); cuts.add((b + 1) * 60L) }
+        cuts.add(end - start + 1)
+        val pieces = ArrayList<Pair<Long, Long>>()
+        var otherS = 0L
+        for (k in 0 until cuts.size - 1) {
+            val a = minOf(cuts[k], end - start)
+            val b = minOf(cuts[k + 1], end - start + 1)
+            if (b <= a) continue
+            pieces.add((start + a) to (start + b - 1))
+            if (k % 2 == 0) otherS = maxOf(otherS, b - a)
+        }
+        if (otherS.toDouble() < activityMinMin * 60.0 - motionSmoothS) return null
+        return pieces
+    }
+
+    /** Longest rest that can sit inside one non-walking session (Swift twin, N=1 tuning). */
+    const val stitchMaxGapS: Long = 20 * 60
+    /** Share of a gap's minutes that must hold an HR reading, unless [stitchMaxDropoutS] allows it. */
+    internal const val stitchMinGapCoveragePct = 50.0
+    /** Share of a piece's minutes at walking cadence that makes it a walk. */
+    internal const val stitchWalkMinuteFrac = 0.5
+    /** 2026-11-18: the most unseen time a stitch may cross — a grip dropout, not the strap coming off. */
+    internal const val stitchMaxDropoutS: Long = 10 * 60
+
+    /** Minutes of [start]..[end] holding at least [gaitMinuteTicks] gait seconds, as a per-minute flag. */
+    internal fun walkingMinutes(start: Long, end: Long, gaitTs: List<Long>): BooleanArray {
+        if (end < start) return BooleanArray(0)
+        val ticks = IntArray(((end - start) / 60 + 1).toInt())
+        for (t in gaitTs) if (t in start..end) ticks[((t - start) / 60).toInt()]++
+        return BooleanArray(ticks.size) { ticks[it] >= gaitMinuteTicks }
+    }
+
+    /** May the rest between two non-walking pieces be bridged? Twin of Swift `canStitchGap`. */
+    internal fun canStitchGap(a: Long, b: Long, hasGaitEvidence: Boolean, gaitTs: List<Long>, hrTs: List<Long>): Boolean {
+        if (!hasGaitEvidence || b - a > stitchMaxGapS) return false
+        if (b <= a) return true
+        val cover = hrCoveragePct(hrTs.filter { it in a..b }, a, b) ?: 0.0
+        if (cover < stitchMinGapCoveragePct) {
+            val unseenS = ((b - a + 59) / 60 * 60).toDouble() * (100.0 - cover) / 100.0
+            if (unseenS > stitchMaxDropoutS.toDouble()) return false
+        }
+        var run = 0
+        for (walking in walkingMinutes(a, b, gaitTs)) {
+            run = if (walking) run + 1 else 0
+            if (run * 60 >= gaitStreakMinS) return false
+        }
+        return true
+    }
+
     /**
      * #148: back-date a confirmed run's start over the warm-up. Motion leads HR at the onset of
      * the first effort — cardiac warm-up climbs over minutes, so the HR-AND-motion gate clips the
@@ -432,7 +557,13 @@ object WorkoutDetector {
     // ---- Public API ----
 
     /**
-     * Detect workouts from the 1 Hz HR + gravity store.
+     * Detect workouts from the 1 Hz HR + gravity store. Twin of Swift `WorkoutDetector.detect`: the same
+     * gates, the same splitting (elevated cores, walking-streak pieces), the same back-dating and the same
+     * stitch, so both platforms return the same sessions for the same streams.
+     *
+     * Not yet twinned (pre-existing, from the Swift side of 09baea0b / b0e54e9f): each session's zones,
+     * Effort and calories here weight samples equally, where Swift weights them by credited seconds and
+     * passes Effort a minimum span. At 1 Hz the two agree; across gaps they can differ.
      *
      * @param hr heart-rate stream (required; empty → []).
      * @param gravity gravity stream (required; empty → []).
@@ -441,6 +572,9 @@ object WorkoutDetector {
      * @param maxHR HRmax (bpm). null → estimated via StrainScorer.estimateHRmax.
      * @param age used only for the Tanaka fallback when maxHR is null.
      * @param profile when provided, per-bout calories are estimated.
+     * @param steps the strap's step stream. A second tagged walk or run passes the motion gate even when
+     *   the gravity delta does not, and walking streaks cut a bout into pieces. null keeps the gravity-only
+     *   gate and no gait splitting.
      */
     fun detect(
         hr: List<HrSample>,
@@ -449,18 +583,12 @@ object WorkoutDetector {
         maxHR: Double? = null,
         age: Double? = null,
         profile: UserProfile? = null,
-        // #1545: TRIMP recipe for each bout's Effort. Defaults to EDWARDS so every existing caller and
-        // test is byte-identical; the app threads the user's choice so a bout and the day it sits in are
-        // never scored by different recipes, which would be worse than either one being "wrong".
+        // #1545: TRIMP recipe for each bout's Effort (see the Swift twin).
         effortMethod: StrainScorer.Method = StrainScorer.Method.EDWARDS,
-        // #1545: receives the gate-by-gate counts for THIS call. null (the default) keeps every existing
-        // caller and test byte-identical — nothing is computed that the detector was not already
-        // computing, the counters just record it.
+        // #1545: receives the gate-by-gate counts for THIS call.
         funnel: ((DetectionFunnel) -> Unit)? = null,
+        steps: List<StepSample>? = null,
     ): List<ExerciseSession> {
-        // try/finally (Swift uses `defer`) so the funnel is reported on EVERY exit, including the early
-        // returns below. A day that bails at "no motion rows at all" is precisely the day whose report
-        // matters most, and it is the one a happy-path-only emit would stay silent about.
         val f = DetectionFunnel()
         try {
             val hrSeg = cleanHR(hr)
@@ -489,17 +617,14 @@ object WorkoutDetector {
             val hrBpm = hrSeg.map { it.bpm.toDouble() }
             val smooth = smoothedIntensity(motion, motionSmoothS)
             val motionTs = motion.map { it.ts }
+            // 2026-09-26 (Swift): the strap's gait tag is a direct walking signal; a quiet-arm walk passes.
+            val gaitTs = (steps ?: emptyList()).asSequence().filter { isGait(it.activityClass) }.map { it.ts }.toHashSet()
 
-            // Walk the gravity timeline; flag samples where BOTH gates hold.
             val activeTs = ArrayList<Long>()
             for (idx in motion.indices) {
                 val p = motion[idx]
-                val inten = smooth[idx]
-                if (inten <= motionThreshold) continue
+                if (smooth[idx] <= motionThreshold && p.ts !in gaitTs) continue
                 f.motionPassed++
-                // Split the HR rejection two ways: no sample within tolerance is a SENSOR GAP, a sample at or
-                // below the floor is a body that simply was not working. They read identically in a bout count
-                // of zero and call for opposite responses.
                 val bpm = nearest(hrTs, hrBpm, p.ts, alignToleranceS)
                 if (bpm == null) { f.hrMissing++; continue }
                 if (bpm <= hrFloor) { f.hrTooLow++; continue }
@@ -508,28 +633,19 @@ object WorkoutDetector {
             f.active = activeTs.size
             if (activeTs.isEmpty()) return emptyList()
 
-            // Group contiguous active samples into runs, merging gaps < MERGE_GAP_S.
             val rawRuns = ArrayList<Pair<Long, Long>>()
             var runStart = activeTs[0]
             var prev = activeTs[0]
             for (k in 1 until activeTs.size) {
                 val ts = activeTs[k]
-                if ((ts - prev).toDouble() > mergeGapS) {
-                    rawRuns.add(runStart to prev)
-                    runStart = ts
-                }
+                if ((ts - prev).toDouble() > mergeGapS) { rawRuns.add(runStart to prev); runStart = ts }
                 prev = ts
             }
             rawRuns.add(runStart to prev)
             f.runs = rawRuns.size
 
-            // Second pass (#303): bridge adjacent runs across a brief, still-elevated-HR
-            // lull so a sustained effort isn't shattered by coasting / junctions / sensor
-            // gaps. Runs over a genuine rest (HR falls to resting) are NOT bridged.
             val runs = bridgeRuns(rawRuns, hrSeg, hrFloor)
             f.bridged = runs.size
-            // Measured on the BRIDGED runs, before any qualification gate: this is the shape of what the
-            // detector was offered, which is the thing a `kept=0` day has to be judged against.
             if (runs.isNotEmpty()) {
                 val durs = runs.map { maxOf(0L, it.second - it.first) }
                 f.longestRunS = durs.max().toInt()
@@ -537,90 +653,125 @@ object WorkoutDetector {
             }
 
             val minDurS = minExerciseMin * 60.0
-            val sessions = ArrayList<ExerciseSession>()
-            for ((idx, run) in runs.withIndex()) {
-                val (start, end) = run
-                // Onset latency tolerance equal to the smoothing window.
-                if ((end - start).toDouble() < minDurS - motionSmoothS) { f.droppedShort++; continue }
-                // Qualify on the HR-elevated CORE (unchanged gates) so the warm-up's low intensity
-                // can't dilute a real workout below the zone-2 bar and drop it (#148).
-                val core = hrSeg.filter { it.ts in start..end }
-                if (core.isEmpty()) { f.droppedNoHR++; continue }
-
-                var zonePct: Map<Int, Double> = emptyMap()
-                var avgHRR: Double? = null
+            // Every reported stat comes from one window, so a stitched or back-dated session cannot show
+            // zones from its core beside avg HR and calories from the whole.
+            fun makeSession(from: Long, to: Long, activityTier: Boolean): ExerciseSession? {
+                val window = hrSeg.filter { it.ts in from..to }
+                if (window.isEmpty()) return null
+                var zones: Map<Int, Double> = emptyMap()
+                var hrr: Double? = null
                 val m = effMaxHR
-                if (m != null && m > restHR) {
-                    val (zp, ah) = boutIntensity(core, restHR, m)
-                    zonePct = zp
-                    avgHRR = ah
-                }
-
-                // Intensity qualification: require ≥ MIN_INTENSITY_Z2PLUS in zone 2+.
-                // 2026-09-21 activity tier: a run that fails the zone-2 bar is NOT dropped outright —
-                // it is re-qualified against the sustained-activity floor (rest + activityHRRFraction
-                // × HRR, held for ≥ activityElevatedFrac of the run over ≥ activityMinMin). That tier
-                // is where WHOOP's own auto-detected "Activity" rows live; a fixed bpm margin cannot
-                // express it because the right floor scales with the user's reserve, not their resting
-                // HR alone. Failing BOTH bars drops the run under droppedLowIntensity, unchanged.
-                var isActivityTier = false
-                if (zonePct.isNotEmpty()) {
-                    val z2plus = (2..5).sumOf { zonePct[it] ?: 0.0 } / 100.0
-                    if (z2plus < minIntensityZ2Plus) {
-                        if (m != null && m > restHR &&
-                            (end - start).toDouble() >= activityMinMin * 60.0 - motionSmoothS) {
-                            val activityFloor = restHR + activityHRRFraction * (m - restHR)
-                            val elevated = core.count { it.bpm.toDouble() > activityFloor }
-                            isActivityTier = elevated.toDouble() / core.size.toDouble() >= activityElevatedFrac
-                        }
-                        if (!isActivityTier) { f.droppedLowIntensity++; continue }
-                    }
-                }
-
-                // Qualified → back-date the start over the warm-up and report stats on the full window (#148).
-                // Never back-date past the previous run's end: a continuous-motion stretch whose HR dipped to
-                // resting BETWEEN two efforts (so bridgeRuns kept them separate) must not overlap the earlier one.
-                val floor = if (idx > 0) runs[idx - 1].second + 1 else Long.MIN_VALUE
-                val effStart = maxOf(backdatedStart(start, motionTs, smooth), floor)
-                val window = hrSeg.filter { it.ts in effStart..end }
-                if (window.isEmpty()) { f.droppedNoHR++; continue }
-                val bpms = window.map { it.bpm.toDouble() }
-
+                if (m != null && m > restHR) { val (z, h) = boutIntensity(window, restHR, m); zones = z; hrr = h }
                 var kcal: Double? = null
                 var kj: Double? = null
                 if (profile != null) {
                     val (k, j) = Calories.estimateBoutCalories(window, profile, effMaxHR, restHR)
-                    kcal = k
-                    kj = j
+                    kcal = k; kj = j
                 }
-
-                val avg = bpms.sum() / bpms.size.toDouble()
-                val peak = window.maxOf { it.bpm }
-                val strain = StrainScorer.strain(
-                    window, effMaxHR, restHR, effortMethod, profile?.sex ?: "male")
-
-                sessions.add(
-                    ExerciseSession(
-                        start = effStart,
-                        end = end,
-                        avgHR = avg,
-                        peakHR = peak,
-                        strain = strain,
-                        durationS = (end - effStart).toDouble(),
-                        zoneTimePct = zonePct,
-                        avgHRRPct = avgHRR,
-                        hrmax = effMaxHR,
-                        hrmaxSource = hrmaxSource,
-                        caloriesKcal = kcal,
-                        caloriesKJ = kj,
-                        hrCoveragePct = hrCoveragePct(window.map { it.ts }, effStart, end),
-                        isActivityTier = isActivityTier,
-                    )
+                return ExerciseSession(
+                    start = from, end = to,
+                    avgHR = window.sumOf { it.bpm.toDouble() } / window.size.toDouble(),
+                    peakHR = window.maxOf { it.bpm },
+                    strain = StrainScorer.strain(window, effMaxHR, restHR, effortMethod, profile?.sex ?: "male"),
+                    durationS = (to - from).toDouble(),
+                    zoneTimePct = zones, avgHRRPct = hrr, hrmax = effMaxHR, hrmaxSource = hrmaxSource,
+                    caloriesKcal = kcal, caloriesKJ = kj,
+                    hrCoveragePct = hrCoveragePct(window.map { it.ts }, from, to),
+                    isActivityTier = activityTier,
                 )
             }
-            f.kept = sessions.size
-            f.keptActivity = sessions.count { it.isActivityTier }
-            return sessions
+            fun z2plus(z: Map<Int, Double>): Double = (2..5).sumOf { z[it] ?: 0.0 } / 100.0
+
+            data class Entry(val start: Long, val end: Long, val coreSplit: Boolean, val gaitSplit: Boolean, val root: Int)
+            val queue = ArrayList(runs.mapIndexed { i, r -> Entry(r.first, r.second, true, true, i) })
+            val splitRoots = HashSet<Int>()
+            val keptRoots = HashSet<Int>()
+            val gaitSorted = gaitTs.sorted()
+            val sessions = ArrayList<ExerciseSession>()
+            var qi = 0
+            var prevRunEnd = Long.MIN_VALUE
+            while (qi < queue.size) {
+                val (start, end, coreSplit, gaitSplit, root) = queue[qi]
+                val isRun = coreSplit && gaitSplit
+                qi++
+                val backdateFloor = prevRunEnd
+                if (isRun) prevRunEnd = end + 1
+                if ((end - start).toDouble() < minDurS - motionSmoothS) { if (isRun) f.droppedShort++; continue }
+                val core = hrSeg.filter { it.ts in start..end }
+                if (core.isEmpty()) { f.droppedNoHR++; continue }
+
+                var zonePct: Map<Int, Double> = emptyMap()
+                val m = effMaxHR
+                if (m != null && m > restHR) zonePct = boutIntensity(core, restHR, m).first
+
+                var isActivityTier = false
+                // Fail closed (Swift b0e54e9f): with no usable HRmax there are no zones, so z2+ reads 0 and
+                // the run must pass the gates below, which also need an HRmax.
+                if (z2plus(zonePct) < minIntensityZ2Plus) {
+                    if (m != null && m > restHR && (end - start).toDouble() >= activityMinMin * 60.0 - motionSmoothS) {
+                        val activityFloor = restHR + activityHRRFraction * (m - restHR)
+                        val elevated = core.count { it.bpm.toDouble() > activityFloor }
+                        val frac = elevated.toDouble() / core.size.toDouble()
+                        isActivityTier = frac >= (if (gaitSplit) activityElevatedFrac else pieceElevatedFrac)
+                    }
+                    if (!isActivityTier) {
+                        if (coreSplit && m != null && m > restHR) {
+                            val cores = elevatedCores(core, restHR + activityHRRFraction * (m - restHR))
+                            if (cores.any { (it.second - it.first).toDouble() >= activityMinMin * 60.0 - motionSmoothS }) {
+                                if (isRun) f.splitRuns++
+                                splitRoots.add(root)
+                                queue.addAll(qi, cores.map { Entry(it.first, it.second, false, gaitSplit, root) })
+                                continue
+                            }
+                        }
+                        if (isRun) f.droppedLowIntensity++
+                        continue
+                    }
+                }
+
+                if (gaitSplit) {
+                    val pieces = gaitPieces(start, end, gaitSorted) { a, b ->
+                        val mm = effMaxHR
+                        if (mm == null || mm <= restHR) true
+                        else z2plus(boutIntensity(hrSeg.filter { it.ts in a..b }, restHR, mm).first) < minIntensityZ2Plus
+                    }
+                    if (pieces != null) {
+                        if (isRun) f.splitRuns++
+                        splitRoots.add(root)
+                        queue.addAll(qi, pieces.map { Entry(it.first, it.second, coreSplit, false, root) })
+                        continue
+                    }
+                }
+
+                // Only a bridged run is back-dated over its warm-up, never past the previous run's end (#148).
+                val effStart = if (isRun) maxOf(backdatedStart(start, motionTs, smooth), backdateFloor) else start
+                val session = makeSession(effStart, end, isActivityTier)
+                if (session == null) { f.droppedNoHR++; continue }
+                sessions.add(session)
+                keptRoots.add(root)
+                if (!isRun) f.splitKept++
+            }
+            f.splitDropped = (splitRoots - keptRoots).size
+
+            // Rejoin pieces of one session that a low-HR rest (or a grip dropout) split apart. A walk piece
+            // is never a side of a join, and a walking streak in the gap blocks it.
+            fun isWalk(w: ExerciseSession): Boolean {
+                val minutes = walkingMinutes(w.start, w.end, gaitSorted)
+                val frac = minutes.count { it }.toDouble() / maxOf(1, minutes.size).toDouble()
+                return frac >= stitchWalkMinuteFrac && z2plus(w.zoneTimePct) < minIntensityZ2Plus
+            }
+            val hasGaitEvidence = (steps ?: emptyList()).any { it.activityClass != null }
+            val stitched = ArrayList<ExerciseSession>()
+            for (w in sessions.sortedBy { it.start }) {
+                val last = stitched.lastOrNull()
+                val joined = if (last != null && !isWalk(last) && !isWalk(w) &&
+                    canStitchGap(last.end, w.start, hasGaitEvidence, gaitSorted, hrTs)
+                ) makeSession(last.start, maxOf(last.end, w.end), last.isActivityTier && w.isActivityTier) else null
+                if (joined != null) stitched[stitched.size - 1] = joined else stitched.add(w)
+            }
+            f.kept = stitched.size
+            f.keptActivity = stitched.count { it.isActivityTier }
+            return stitched
         } finally {
             funnel?.invoke(f)
         }
