@@ -2911,4 +2911,6 @@
     <string name="accuracy_hr_coverage">Cobertura de frecuencia cardíaca</string>
     <string name="accuracy_missing_hr">La falta de datos de frecuencia cardíaca puede subestimar Effort y las calorías.</string>
     <string name="accuracy_strength_effort">Effort mide la carga cardiovascular. Registra series y pesos para seguir la carga del entrenamiento de fuerza.</string>
+    <string name="energy_total_calories">Calorías totales</string>
+    <string name="energy_active_calories">Calorías activas</string>
 </resources>

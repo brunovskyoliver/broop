@@ -9085,7 +9085,9 @@ class WhoopBleClient(
                         if (!ev.startsWith("BLE_REALTIME_HR")) {
                             _state.update { it.copy(lastEvent = ev) }
                         }
-                        // Charging flag — wire observation: BATTERY_LEVEL u8 bit0 (4.0 @26 / 5.0 @30).
+                        // Charging flag — wire observation: BATTERY_LEVEL u8 bit0 on a WHOOP 4.0 (@26). A 5/MG
+                        // event carries no readable bit (see Framing.decodeEventWhoop5), so on a 5/MG this
+                        // block sets nothing and the CHARGING_ON/OFF + pack edges below drive the flag.
                         // PR #568 reimpl: drop the old 45s time-freshness gate (which suppressed the bolt
                         // for the first ~45s of every connect on a strap with a stale RTC). The only thing
                         // we must still exclude is a HISTORICAL BATTERY_LEVEL event replayed mid-backfill —
@@ -9140,9 +9142,14 @@ class WhoopBleClient(
                             // strap REPLAYS these edges during the next historical offload with identical
                             // payloads, so an accepted replay would switch the pill back on minutes after
                             // the pack was physically removed.
-                            if (ev.startsWith("BATTERY_PACK_CONNECTED")) {
-                                _state.update { s -> s.copy(charging = true) }
-                            } else if (ev.startsWith("BATTERY_PACK_REMOVED")) {
+                            //
+                            // 21 no longer sets the flag. It means a pack was attached, not that charging
+                            // began: a depleted pack raises 21 and never 7. Only the 4.0 gauge bit used to
+                            // correct that, and a 5/MG has no readable gauge bit (Framing.decodeEventWhoop5),
+                            // so a 21-set flag would hold "charging" for the whole attachment and keep the
+                            // low-battery throttle off. 7 lands in the same second in the capture above.
+                            // Same rule as the stored rows (com.noop.protocol.ChargerState).
+                            if (ev.startsWith("BATTERY_PACK_REMOVED")) {
                                 // Removal clears the readout too: a detached pack must not leave a stale
                                 // charge sitting on the card.
                                 _state.update { s -> s.copy(charging = false, packSocPct = null) }

@@ -842,7 +842,7 @@ private struct BroopAccountStrapCompareCard: View {
         case .skinTemp: return String(localized: "Skin temp")
         case .steps: return String(localized: "Steps")
         case .sleep: return String(localized: "Sleep")
-        case .calories: return String(localized: "Calories")
+        case .calories: return String(localized: "Total calories")
         case .other: return ""
         }
     }

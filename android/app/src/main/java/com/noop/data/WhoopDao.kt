@@ -1204,6 +1204,10 @@ interface WhoopDao : DeviceRegistryDao {
         /** The constant device-id the daily marker projection is written under, so Compare/Explore/
          *  Coach see markers as a single-source series (Swift WhoopStore.labBookSourceId). */
         const val LAB_BOOK_SOURCE_ID = "lab-book"
+
+        /** The event kinds [com.noop.protocol.ChargerState] reads, matched by prefix (kinds carry their number). */
+        const val CHARGER_EDGE_FILTER = "(kind LIKE 'CHARGING_ON%' OR kind LIKE 'CHARGING_OFF%' OR " +
+            "kind LIKE 'BATTERY_PACK_REMOVED%' OR kind LIKE 'BOOT%')"
     }
 
     // MARK: - One-time #34 refile: separate legacy Health Connect data from the Apple Health bucket.
@@ -1446,6 +1450,19 @@ interface WhoopDao : DeviceRegistryDao {
     /** Latest HR sample for a device (most recent ts), or null. */
     @Query("SELECT * FROM hrSample WHERE deviceId = :deviceId ORDER BY ts DESC LIMIT 1")
     suspend fun latestHr(deviceId: String): HrSample?
+
+    /**
+     * The newest charger edges strictly before [before] (several, so a same-second pair still resolves by
+     * rank), for filling a WHOOP 5.0/MG battery row's charging state. Twin of Swift `withChargerState`.
+     */
+    @Query("SELECT ts, kind FROM event WHERE deviceId = :deviceId AND ts < :before AND " +
+        WhoopDao.CHARGER_EDGE_FILTER + " ORDER BY ts DESC LIMIT 8")
+    suspend fun chargerEdgesBefore(deviceId: String, before: Long): List<ChargerEdgeRow>
+
+    /** Charger edges in `[from, to]`, the batch's own window. */
+    @Query("SELECT ts, kind FROM event WHERE deviceId = :deviceId AND ts >= :from AND ts <= :to AND " +
+        WhoopDao.CHARGER_EDGE_FILTER)
+    suspend fun chargerEdgesBetween(deviceId: String, from: Long, to: Long): List<ChargerEdgeRow>
 
     /** Latest battery sample for a device (most recent ts), or null. */
     @Query("SELECT * FROM battery WHERE deviceId = :deviceId ORDER BY ts DESC LIMIT 1")

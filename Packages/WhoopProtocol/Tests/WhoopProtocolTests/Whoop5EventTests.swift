@@ -6,7 +6,8 @@ import XCTest
 /// The 5.0 inner record starts at byte 8 (vs 4.0's byte 4), so the static schema fields sit at their
 /// 4.0 offset + 4: `event` (u8/EventNumber) at frame[10] and `event_timestamp` (u32 real unix) at
 /// frame[12] — already surfaced by the `parseFrameWhoop5` static walk. The per-event BATTERY_LEVEL
-/// payload follows the same +4 rule: 4.0's soc@17/mv@21/charge@26 become 5.0's soc@21/mv@25/charge@30.
+/// payload follows the same +4 rule: 4.0's soc@17/mv@21 become 5.0's soc@21/mv@25. The 4.0 charge byte
+/// has no readable 5.0 twin (see `decodeWhoop5Event`), so no charging field is decoded.
 /// Unlike the 5.0 COMMAND_RESPONSE (which switched to a DIRECT percent), the EVENT battery keeps 4.0's
 /// deci-percent (÷10) — verified by a clean monotonic discharge across the capture (49.9 → 47.7 %).
 ///
@@ -26,7 +27,7 @@ final class Whoop5EventTests: XCTestCase {
     }
 
     /// Real BATTERY_LEVEL(3) event, soc payload `02 f3 01 …`: u16@21 = 0x01f3 = 499 → 49.9 %,
-    /// mv u16@25 = 0x0ef9 = 3833 mV, charge u8@30 = 0 (worn, not charging).
+    /// mv u16@25 = 0x0ef9 = 3833 mV.
     private let batteryEventHex =
         "aa01240001002eb130350300a589266a5118140002f3010000f90e00000000340806003500000000358eb56f"
 
@@ -38,7 +39,10 @@ final class Whoop5EventTests: XCTestCase {
         XCTAssertEqual(f.parsed["event_timestamp"]?.intValue, 1780910501)
         XCTAssertEqual(f.parsed["battery_pct"]?.doubleValue, 49.9)   // deci-percent ÷10, like 4.0
         XCTAssertEqual(f.parsed["battery_mV"]?.intValue, 3833)
-        XCTAssertEqual(f.parsed["battery_charging"]?.intValue, 0)
+        // @30 read 0 through 85 real charge sessions; charging comes from the charger edges instead.
+        XCTAssertNil(f.parsed["battery_charging"])
+        let streams = extractStreams([f], deviceClockRef: 0, wallClockRef: 0)
+        XCTAssertEqual(streams.battery.map(\.charging), [nil], "unknown, not \"not charging\"")
     }
 
     /// Real DOUBLE_TAP(14) event — a simple event with no payload. The static +4 walk alone must

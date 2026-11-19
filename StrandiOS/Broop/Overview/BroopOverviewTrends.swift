@@ -52,7 +52,7 @@ struct BroopOverviewTrendMetric: Hashable, Identifiable {
     static let effortSet: [BroopOverviewTrendMetric] = [
         .init(key: "strain", title: String(localized: "Day Effort"), symbol: "flame", kind: .effort, color: BroopPalette.effort),
         .init(key: "steps", title: String(localized: "Steps"), symbol: "shoeprints.fill", kind: .whole, color: BroopPalette.effort),
-        .init(key: "active_kcal", title: String(localized: "Calories"), symbol: "flame", kind: .whole, color: BroopPalette.effort),
+        .init(key: "active_kcal", title: String(localized: "Active calories"), symbol: "flame", kind: .whole, color: BroopPalette.effort),
     ]
 }
 

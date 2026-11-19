@@ -2806,4 +2806,6 @@
     <string name="accuracy_hr_coverage">Покрытие данных пульса</string>
     <string name="accuracy_missing_hr">Пробелы в данных пульса могут занижать Effort и калории.</string>
     <string name="accuracy_strength_effort">Effort измеряет сердечно-сосудистую нагрузку. Записывайте подходы и веса, чтобы отслеживать силовую нагрузку.</string>
+    <string name="energy_total_calories">Всего калорий</string>
+    <string name="energy_active_calories">Активные калории</string>
 </resources>

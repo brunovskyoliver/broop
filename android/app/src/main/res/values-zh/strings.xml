@@ -2881,4 +2881,6 @@
     <string name="accuracy_hr_coverage">心率数据覆盖率</string>
     <string name="accuracy_missing_hr">缺失的心率数据可能导致 Effort 和卡路里被低估。</string>
     <string name="accuracy_strength_effort">Effort 衡量心血管负荷。记录组数和重量以跟踪力量训练负荷。</string>
+    <string name="energy_total_calories">总卡路里</string>
+    <string name="energy_active_calories">活动卡路里</string>
 </resources>

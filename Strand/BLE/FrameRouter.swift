@@ -509,9 +509,12 @@ public final class FrameRouter {
                 // branch above carries none. Android's EVENT routing does see replays, and its capture
                 // showed the strap re-sending these edges with byte-identical payloads, so the gate is
                 // load-bearing THERE. Copying it here would guard against something that cannot happen.
-                if ev.hasPrefix("BATTERY_PACK_CONNECTED") {
-                    state.charging = true
-                } else if ev.hasPrefix("BATTERY_PACK_REMOVED") {
+                //
+                // 21 no longer sets the flag: it means a pack was attached, not that charging began, and a
+                // depleted pack raises 21 and never 7. Only the 4.0 gauge bit used to correct that, and a 5/MG
+                // has no readable gauge bit (`decodeWhoop5Event`), so a 21-set flag would hold "charging" for
+                // the whole attachment. Same rule as the stored rows (`ChargerState`).
+                if ev.hasPrefix("BATTERY_PACK_REMOVED") {
                     state.charging = false
                     // A detached pack must not leave its last charge sitting on the device card.
                     state.packSocPct = nil

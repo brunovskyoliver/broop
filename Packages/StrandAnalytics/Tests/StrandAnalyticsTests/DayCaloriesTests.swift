@@ -279,4 +279,67 @@ final class DayCaloriesTests: XCTestCase {
         XCTAssertEqual(forward.activeKcal, 0.0, accuracy: 1e-12,
                        "the tie resolves to the lower reading, so no active energy is credited")
     }
+
+    /// The awake-anchored day gate and the whole-span BMR, pinned as an oracle. Generated from this Swift
+    /// implementation and pasted verbatim into Android's `DayCaloriesTest.dayEnergy_anchorOracle`.
+    /// `zeroAwake` and `vo2Only` must equal `none`: a measured VO2max is read only beside an awake HR.
+    func testDayEnergyAnchorOracle() {
+        func run(_ bpm: Int, _ n: Int, _ step: Int = 1, start: Int = 0) -> [HRSample] {
+            stride(from: 0, to: n, by: step).map { HRSample(ts: start + $0, bpm: bpm) }
+        }
+        let inputs: [String: [HRSample]] = [
+            "walk1Hz": run(110, 3600), "walk30s": run(110, 3600, 30),
+            "mixed": run(90, 1200) + run(110, 1200, start: 1200) + run(150, 1200, start: 2400),
+        ]
+        let base = UserProfile(weightKg: 66, heightCm: 170, age: 19, sex: "male")
+        func profile(_ name: String) -> UserProfile {
+            var p = base
+            switch name {
+            case "awake": p.awakeRestingHR = 67
+            case "awakeVo2": p.awakeRestingHR = 67; p.vo2max = 41.86
+            case "zeroAwake": p.awakeRestingHR = 0; p.vo2max = 41.86
+            case "vo2Only": p.vo2max = 41.86
+            default: break
+            }
+            return p
+        }
+        let expected = """
+            none|walk1Hz|nil|1680.531000000|0.000000000|3600.000000000
+            none|walk30s|nil|1680.531000000|0.000000000|3600.000000000
+            none|mixed|nil|1680.531000000|242.204188894|3600.000000000
+            none|mixed|50000|972.529513889|242.204188894|3600.000000000
+            awake|walk1Hz|nil|1680.531000000|260.980016777|3600.000000000
+            awake|walk30s|nil|1680.531000000|260.980016777|3600.000000000
+            awake|mixed|nil|1680.531000000|295.210387220|3600.000000000
+            awakeVo2|walk1Hz|nil|1680.531000000|245.909136950|3600.000000000
+            awakeVo2|walk30s|nil|1680.531000000|245.909136950|3600.000000000
+            awakeVo2|mixed|nil|1680.531000000|285.163134003|3600.000000000
+            awakeVo2|mixed|50000|972.529513889|285.163134003|3600.000000000
+            zeroAwake|mixed|nil|1680.531000000|242.204188894|3600.000000000
+            vo2Only|mixed|nil|1680.531000000|242.204188894|3600.000000000
+            """
+        let cases: [(String, String, Double?)] = [
+            ("none", "walk1Hz", nil),
+            ("none", "walk30s", nil),
+            ("none", "mixed", nil),
+            ("none", "mixed", 50000),
+            ("awake", "walk1Hz", nil),
+            ("awake", "walk30s", nil),
+            ("awake", "mixed", nil),
+            ("awakeVo2", "walk1Hz", nil),
+            ("awakeVo2", "walk30s", nil),
+            ("awakeVo2", "mixed", nil),
+            ("awakeVo2", "mixed", 50000),
+            ("zeroAwake", "mixed", nil),
+            ("vo2Only", "mixed", nil),
+        ]
+        let rows = cases.map { p, i, credited -> String in
+            let e = Calories.estimateDayEnergy(inputs[i]!, profile: profile(p), hrmax: 194.7, restingHR: 48,
+                                               creditedSeconds: credited)
+            return [p, i, credited.map { String(Int($0)) } ?? "nil",
+                    String(format: "%.9f", e.restingKcal), String(format: "%.9f", e.activeKcal),
+                    String(format: "%.9f", e.observedSeconds)].joined(separator: "|")
+        }
+        XCTAssertEqual(rows.joined(separator: "\n"), expected)
+    }
 }

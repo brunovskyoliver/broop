@@ -1085,10 +1085,19 @@ public enum Calories {
         return gap > 0 && gap <= WorkoutDetector.mergeGapS ? gap : 0
     }
 
-    /// Whole-day active gate. The blended curve was tried on the day path and rejected on 22 real days
-    /// against an Apple Watch: mean active 1039 kcal against 643 (+62%), even with an awake anchor and a
-    /// measured VO2max. So the day credits Keytel only at genuine exercise HR, which reads low instead.
+    /// Whole-day active gate when no awake resting HR is known, as a share of the reserve above the
+    /// caller's resting HR (the sleeping floor in the app). The blended curve was tried on the day path
+    /// and rejected on 22 real days against an Apple Watch: mean active 1039 kcal against 643 (+62%), even
+    /// with an awake anchor and a measured VO2max. So the day credits Keytel only at exercise HR.
     static let dayActiveHRRFraction = 0.50
+    /// Whole-day active gate once an awake resting HR is known: the flex point of the Flex-HR method
+    /// (Spurr et al. 1988; Ceesay et al. 1989), below which heart rate does not track energy and resting
+    /// energy is used. 30% of the heart-rate reserve above the AWAKE resting HR is the ACSM lower bound
+    /// of light-intensity activity (Garber et al. 2011, Table 4: 2 METs, 57% HRmax), the lowest stage
+    /// Keytel 2005 was fitted on. The sleeping floor is not a resting HR for this purpose: 50% above it
+    /// sat near 121 bpm on real data (62% HRmax), so ordinary walking credited nothing and a 6,400-step
+    /// day read 6 kcal active against 409 on an Apple Watch.
+    static let dayActiveAwakeHRRFraction = 0.30
 
     /// One energy curve (kcal/s) for bouts: BMR at resting HR, linear up to Keytel at
     /// `keytelBlendHRmaxFraction` of HRmax, Keytel above that, and never below BMR.
@@ -1181,11 +1190,15 @@ public enum Calories {
     ///
     /// Resting energy is BMR over `creditedSeconds` (the whole day when nil, whatever the strap saw):
     /// metabolism does not stop when the strap comes off. Active energy is the Keytel rate above BMR at or
-    /// over `dayActiveHRRFraction` of HRR, over observed intervals capped at the stream's cadence.
-    /// `observedSeconds` reports coverage and does not scale either figure. This path keeps the caller's
-    /// resting HR (the sleeping floor in the app) and its Uth VO2max, and ignores the profile's energy
-    /// anchors: its gate and history were set on those inputs, and anchoring only lowers a reading that is
-    /// already low.
+    /// over a gate on the heart-rate reserve, over observed intervals capped at the stream's cadence.
+    /// `observedSeconds` reports coverage and does not scale either figure.
+    ///
+    /// With `profile.awakeRestingHR` the gate is `dayActiveAwakeHRRFraction` above that awake HR, and the
+    /// Keytel fitness term reads `profile.vo2max`, else Uth on the awake HR. Uth 2004 measured resting HR
+    /// awake and supine, so the sleeping floor overstated VO2max by about half on real data (64 against a
+    /// measured 42 ml/kg/min). Without an awake HR the day keeps the old inputs: `dayActiveHRRFraction`
+    /// above the caller's resting HR and Uth on it, since a gate on the sleeping floor alone cannot place
+    /// the flex point.
     ///
     /// This is an on-device estimate from heart rate alone — NOT laboratory calorimetry, NOT
     /// Apple/WHOOP cloud parity, NOT medical advice.
@@ -1205,12 +1218,16 @@ public enum Calories {
         let coeffs = resolveCoeffs(profile.sex)
 
         let effHRmax = hrmax ?? 220.0
-        let effResting = restingHR ?? 60.0
-        let activeThreshold = effResting + dayActiveHRRFraction * (effHRmax - effResting)
+        let awake = profile.awakeRestingHR.flatMap { $0 > 0 ? $0 : nil }
+        let referenceHR = awake ?? restingHR
+        let effResting = referenceHR ?? 60.0
+        let gateFraction = awake == nil ? dayActiveHRRFraction : dayActiveAwakeHRRFraction
+        let activeThreshold = effResting + gateFraction * (effHRmax - effResting)
         let restingRate = restingKcalPerS(coeffs, weightKg: weightKg, heightCm: heightCm, age: age)
-        // Fitness anchor (Uth VO2max) when a resting HR is known → Keytel fitness-adjusted rate; nil
-        // restingHR → base model, unchanged. Constant across the day.
-        let vo2max = vo2maxFor(hrmax: effHRmax, restingHR: restingHR)
+        // Fitness anchor for the Keytel fitness-adjusted rate, constant across the day. No resting HR at
+        // all → the base model. A measured VO2max is used only beside an awake HR, so a day without one
+        // is scored exactly as before.
+        let vo2max = (awake == nil ? nil : profile.vo2max) ?? vo2maxFor(hrmax: effHRmax, restingHR: referenceHR)
 
         // Ties are REACHABLE: hrSample is keyed (deviceId, ts) and the day feed unions devices, so a
         // two-strap day carries two readings for the same second. Only the LAST of a tied run gets the

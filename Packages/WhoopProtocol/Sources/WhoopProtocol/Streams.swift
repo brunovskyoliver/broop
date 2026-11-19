@@ -164,7 +164,9 @@ public struct BatterySample: Equatable, Codable {
     public let ts: Int          // unix seconds — event RTC for BATTERY_LEVEL events, else wallClockRef
     public let soc: Double?
     public let mv: Int?
-    public let charging: Bool?  // only the BATTERY_LEVEL event reports this; nil otherwise
+    /// WHOOP 4.0: the BATTERY_LEVEL event's own bit. WHOOP 5.0/MG reports none, so the store fills it
+    /// from the strap's charger edges (`ChargerState`). nil = unknown, never "not charging".
+    public let charging: Bool?
     public init(ts: Int, soc: Double?, mv: Int?, charging: Bool? = nil) {
         self.ts = ts; self.soc = soc; self.mv = mv; self.charging = charging
     }
@@ -930,7 +932,7 @@ public func extractStreams(_ parsed: [ParsedFrame],
 
 /// Append a BatterySample from a parsed frame's battery_pct/battery_mV/battery_charging
 /// fields (no-op when neither soc nor mv is present). charging is a real Bool only when the
-/// frame reported it (BATTERY_LEVEL events); command responses leave it nil.
+/// frame reported it (WHOOP 4.0 BATTERY_LEVEL events); 5.0 events and command responses leave it nil.
 func appendBattery(_ out: inout Streams, ts: Int, p: [String: ParsedValue]) {
     let soc = p["battery_pct"]?.doubleValue
     let mv = p["battery_mV"]?.intValue

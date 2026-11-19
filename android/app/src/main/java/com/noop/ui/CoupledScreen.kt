@@ -110,6 +110,16 @@ fun CoupledScreen(
         }.getOrDefault(emptyList())
     }
 
+    // Active energy per day (imported-first, else NOOP's estimate above BMR), the series Swift's coupled card
+    // reads. `DailyMetric.activeKcalEst` holds the day's TOTAL and must not fill an active readout.
+    var activeKcalByDay by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
+    LaunchedEffect(days) {
+        activeKcalByDay = runCatching {
+            vm.repo.resolvedSeries("active_kcal", "my-whoop", "0000-00-00", "9999-99-99",
+                strapDeviceId = vm.activeStrapId).points.associate { it.day to it.value }
+        }.getOrDefault(emptyMap())
+    }
+
     // The learned habitual midsleep the Sleep tab hero threads into its main-night pick, so the bed-wake
     // span below resolves the IDENTICAL block (#294) instead of a screen-local heuristic.
     var habitualMidsleepSec by remember { mutableStateOf<Long?>(null) }
@@ -231,7 +241,7 @@ fun CoupledScreen(
         StrainCard(
             dayStrain21 = dayStrain21,
             recovery = recovery,
-            calories = todayRow?.activeKcalEst,
+            calories = activeKcalByDay[todayKey],
             workouts = workoutsToday,
         )
         SleepCard(
@@ -494,7 +504,7 @@ private fun StrainCard(dayStrain21: Double?, recovery: Double?, calories: Double
             ) {
                 HeroStat("Day Strain", dayStrain21?.let { String.format(Locale.US, "%.1f", it) } ?: COUPLED_NO_DATA, Palette.effortColor)
                 OptimalStat("Optimal", recovery)
-                HeroStat("Calories", calories?.let { "${it.roundToInt()} kcal" } ?: COUPLED_NO_DATA, Palette.metricAmber)
+                HeroStat(uiString(R.string.energy_active_calories), calories?.let { "${it.roundToInt()} kcal" } ?: COUPLED_NO_DATA, Palette.metricAmber)
                 HeroStat("Workouts", workouts.toString(), Palette.textPrimary)
             }
         }

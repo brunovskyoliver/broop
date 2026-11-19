@@ -2924,4 +2924,6 @@
     <string name="accuracy_hr_coverage">Herzfrequenz-Abdeckung</string>
     <string name="accuracy_missing_hr">Fehlende Herzfrequenzdaten können Effort und Kalorien zu niedrig ausweisen.</string>
     <string name="accuracy_strength_effort">Effort misst die Herz-Kreislauf-Belastung. Protokolliere Sätze und Gewichte, um die Krafttrainingsbelastung zu erfassen.</string>
+    <string name="energy_total_calories">Gesamtkalorien</string>
+    <string name="energy_active_calories">Aktive Kalorien</string>
 </resources>

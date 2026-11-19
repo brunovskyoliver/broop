@@ -127,6 +127,23 @@ internal object DayCycleIntelligenceIntegration {
         )
     }
 
+    /**
+     * BMR seconds for one wake day: the cycle so far, at most 24 h. A cycle stretches over days when a night
+     * has no detected sleep, and that one row must not read as several days of metabolism (7924 kcal on real
+     * data before this cap). Twin of Swift `DayCycleIntelligenceIntegration.creditedSeconds`.
+     */
+    fun creditedSeconds(onset: Long, endExclusive: Long, now: Long): Double =
+        minOf(86_400L, maxOf(0L, minOf(endExclusive, now) - onset)).toDouble()
+
+    /**
+     * The day's active energy under the same day definition [apply] gives its total, so the two readouts
+     * cover one window. Twin of Swift `DayCycleIntelligenceIntegration.activeEnergy`.
+     */
+    fun activeEnergy(result: PhysiologicalStepCycleEngine.Result, day: String, calendar: Double?): Double? {
+        val established = result.firstCycleWakeDay?.let { day >= it } == true
+        return if (established) result.cycleActiveByWakeDay[day] else calendar
+    }
+
     fun apply(
         daily: DailyMetric,
         result: PhysiologicalStepCycleEngine.Result,

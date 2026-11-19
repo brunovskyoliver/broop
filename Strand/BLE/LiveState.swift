@@ -97,33 +97,29 @@ public final class LiveState: ObservableObject {
     @Published public var batteryMv: Int? = nil
     /// Charging flag. Two sources, and they mean different things (#1935).
     ///
-    /// The authority is the strap's BATTERY_LEVEL event — wire observation: u8 bit0 in the payload
-    /// (4.0 @26 / 5.0 @30), pushed ~every 8 min on captured links. That is a LEVEL signal from the
-    /// strap's own gauge: every live battery event rewrites this flag, whatever it was.
+    /// On a WHOOP 4.0 the authority is the strap's BATTERY_LEVEL event — wire observation: u8 bit0 @26,
+    /// pushed ~every 8 min on captured links. That is a LEVEL signal from the strap's own gauge: every live
+    /// battery event rewrites this flag, whatever it was.
     ///
-    /// On a 5/MG it is ALSO set by `BATTERY_PACK_CONNECTED(21)` and cleared by
-    /// `BATTERY_PACK_REMOVED(22)`, which is a latency win — 21 leads `CHARGING_ON(7)` by up to ~17 s in
-    /// captures, so the pill responds when the pack goes on. But 21 means A PACK WAS ATTACHED, not that
-    /// charging began. They diverge on a depleted pack or a poor contact: 21 fires, 7 never does, and
-    /// this reads true while nothing charges.
+    /// A 5/MG has no readable gauge bit (`decodeWhoop5Event`: the shifted @30 read 0 through 85 real charge
+    /// sessions), so there the flag follows the edges only: set by `CHARGING_ON(7)`, cleared by
+    /// `CHARGING_OFF(8)` and `BATTERY_PACK_REMOVED(22)`. `BATTERY_PACK_CONNECTED(21)` does NOT set it: 21
+    /// means a pack was attached, not that charging began, and a depleted pack raises 21 and never 7. With
+    /// no gauge to correct it, a 21-set flag would read true for the whole attachment. The stored battery
+    /// rows follow the same rule (`ChargerState`), so the pill and the history cannot disagree.
     ///
-    /// THAT STATE IS BOUNDED, which is why it is documented rather than split. It does not last until 22:
-    /// the next live BATTERY_LEVEL overwrites it from the strap's own GAUGE, so the window is about one
-    /// battery cadence, and the gauge always gets the last word.
-    ///
-    /// It gets the last word only because nothing else repeats, which is a real constraint rather than an
-    /// observation (#1935). The pack record reaches this platform LOG-ONLY (`FrameRouter`, Test Centre
+    /// Nothing that REPEATS may set this flag, which is a real constraint rather than an observation
+    /// (#1935). The pack record reaches this platform LOG-ONLY (`FrameRouter`, Test Centre
     /// gated) and writes nothing here. Android learned the same rule the hard way: its pushed pack-info
     /// event (109) once wrote `charging = true` on pack PRESENCE every couple of minutes, outran the
     /// gauge, and held a flat pack at "charging" for its whole attachment. An EDGE may set this flag
-    /// (7, 21, 22); a repeating presence signal must not, or the gauge cannot correct it.
+    /// (7, 8, 22); a repeating presence signal must not.
     ///
     /// It matters beyond the pill. `BLEManager.lowPowerThrottleActive` reads it and gates THREE levers, not
     /// one: the low-battery offload cadence, the connection-priority throttle, and the continuous-capture
-    /// pause behind the user's own "Pause HRV capture" percentage. So a pack attached but not charging can
-    /// keep background capture running at low battery after the user asked for it to stop, for that
-    /// window. `BLEManager.batteryPollDue` also reads it, polling every tick instead of every
-    /// other, which is harmless and arguably wanted with a pack on.
+    /// pause behind the user's own "Pause HRV capture" percentage, which is why a pack that is attached but
+    /// not charging must not read true. `BLEManager.batteryPollDue` also reads it, polling every tick
+    /// instead of every other, which is harmless and arguably wanted on a charger.
     ///
     /// nil until the first event of a session; cleared on disconnect so a stale flag can't outlive the
     /// link. Flag ONLY — the battery % keeps its family-specific source (#77).

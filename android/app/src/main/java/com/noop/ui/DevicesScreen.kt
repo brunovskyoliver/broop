@@ -649,7 +649,7 @@ private fun strapMetricLabel(m: MetricArbitrationPolicy.MetricKind): String = wh
     MetricArbitrationPolicy.MetricKind.SKIN_TEMP -> "Skin temp"
     MetricArbitrationPolicy.MetricKind.STEPS -> "Steps"
     MetricArbitrationPolicy.MetricKind.SLEEP -> "Sleep"
-    MetricArbitrationPolicy.MetricKind.CALORIES -> "Calories"
+    MetricArbitrationPolicy.MetricKind.CALORIES -> uiString(R.string.energy_total_calories)
     MetricArbitrationPolicy.MetricKind.OTHER -> ""
 }
 

@@ -341,7 +341,7 @@ fun WorkoutsScreen(vm: AppViewModel) {
             postLogNote?.let { item { PostLogNoteBanner(it) } }
             item { EffortHero(rows = windowRows, effectiveRange = resolved, groups = groups) }
             item { SummarySection(rows = windowRows, effectiveRange = resolved, groups = groups) }
-            item { CalorieHeatmapSection(recentDays) }
+            item { CalorieHeatmapSection(vm, recentDays) }
             item { BreakdownSection(groups = groups, rows = windowRows) }
             item { ZonesSection(windowRows) }
             if (recoveryTrend.isNotEmpty()) {
@@ -835,11 +835,16 @@ private fun HeroStat(title: String, value: String, tint: Color, modifier: Modifi
 // [ActivityHeatmap] (parity with the Swift twin); this composable is just the Compose renderer. Hidden
 // entirely when there's no daily-calorie data yet.
 @Composable
-private fun CalorieHeatmapSection(recentDays: List<com.noop.data.DailyMetric>) {
-    val values = remember(recentDays) {
-        recentDays.mapNotNull { d -> d.activeKcalEst?.let { d.day to it } }
-            .groupBy({ it.first }, { it.second })
-            .mapValues { (_, v) -> v.max() }
+private fun CalorieHeatmapSection(vm: AppViewModel, recentDays: List<com.noop.data.DailyMetric>) {
+    // The active series, not `DailyMetric.activeKcalEst` (the day's TOTAL, BMR included): this grid is
+    // titled "Active calories". Re-read when the daily rows change, as the Swift twin re-reads per load.
+    var values by remember { mutableStateOf<Map<String, Double>>(emptyMap()) }
+    LaunchedEffect(recentDays) {
+        values = runCatching {
+            vm.repo.resolvedSeries("active_kcal", "my-whoop", "0000-00-00", "9999-99-99",
+                strapDeviceId = vm.activeStrapId).points
+                .groupBy({ it.day }, { it.value }).mapValues { (_, v) -> v.max() }
+        }.getOrDefault(emptyMap())
     }
     val today = remember { java.time.LocalDate.now().toString() }
     val grid = remember(values, today) { ActivityHeatmap.build(values, today) }

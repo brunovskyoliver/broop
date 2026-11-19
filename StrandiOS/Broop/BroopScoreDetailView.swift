@@ -292,7 +292,7 @@ struct BroopOverviewEffortScreen: View {
                              link: .metric(key: "steps", source: nil)))
         }
         if let r = byName[String(localized: "Active calories")] {
-            out.append(.init(reading: r, symbol: "flame", label: String(localized: "Calories"), link: .metric(key: "active_kcal", source: nil)))
+            out.append(.init(reading: r, symbol: "flame", label: String(localized: "Active calories"), link: .metric(key: "active_kcal", source: nil)))
         }
         return out
     }

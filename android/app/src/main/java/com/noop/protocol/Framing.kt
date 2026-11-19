@@ -626,8 +626,12 @@ object Framing {
      * EVENT (type 48) for WHOOP 5.0/MG — the 4.0 layout + 4: event@10 (u8, EventNumber),
      * event_timestamp@12 (u32), opaque payload bytes @16..size-4 (kept as hex for protocol research —
      * real captures show uncatalogued events, e.g. 0x1D(29) with a 16-byte payload). For
-     * BATTERY_LEVEL the 4.0 payload decode shifts with it: soc%=u16@21/10, mV=u16@25, charging@30
-     * bit0 (mirrors Swift Interpreter's whoop5 event decode; all gated, fail closed). (#78 fork)
+     * BATTERY_LEVEL the 4.0 payload decode shifts with it: soc%=u16@21/10, mV=u16@25 (mirrors Swift
+     * Interpreter's whoop5 event decode; all gated, fail closed). (#78 fork)
+     *
+     * No charging bit: 4.0's charge@26 shifted to @30 read 0 in all 3,980 BATTERY_LEVEL events of a real
+     * 5/MG, through 85 charge sessions in which SoC climbed about 1 % per 30 s. Charging on a 5/MG comes
+     * from the strap's charger edges instead ([ChargerState]).
      */
     private fun decodeEventWhoop5(frame: ByteArray, limit: Int, parsed: MutableMap<String, Any?>) {
         val evVal = frame.u8(10, limit) ?: return
@@ -640,7 +644,6 @@ object Framing {
         if (EventNumber.fromRaw(evVal) == EventNumber.BATTERY_LEVEL) {
             frame.u16(21, limit)?.let { raw -> if (raw <= 1100) parsed["battery_pct"] = raw.toDouble() / 10.0 }
             frame.u16(25, limit)?.let { mv -> if (mv in 3000..4300) parsed["battery_mV"] = mv }
-            frame.u8(30, limit)?.let { ch -> if (ch <= 1) parsed["battery_charging"] = ch and 1 }
         }
     }
 

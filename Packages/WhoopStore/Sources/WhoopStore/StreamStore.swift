@@ -345,7 +345,9 @@ extension WhoopStore {
                     INSERT INTO battery (deviceId, ts, soc, mv, charging) VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(deviceId, ts) DO NOTHING
                     """)
-                for b in streams.battery {
+                // A WHOOP 5.0/MG sample carries no charging bit: fill it from the strap's charger edges,
+                // this batch's included (written just above). Kotlin twin: `WhoopRepository.insertWithinTransaction`.
+                for b in try WhoopStore.withChargerState(db, deviceId: deviceId, streams.battery) {
                     try stmt.execute(arguments: [deviceId, b.ts, b.soc, b.mv, b.charging])
                     bat += db.changesCount
                 }
