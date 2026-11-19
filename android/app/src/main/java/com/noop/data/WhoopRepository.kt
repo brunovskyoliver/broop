@@ -268,6 +268,8 @@ internal fun assignRrSeq(deviceId: String, rows: List<RrRow>): List<RrInterval> 
 /** payloadJSON is the deterministic sorted-keys JSON for the remaining parsed fields. */
 data class EventEntry(val ts: Long, val kind: String, val payloadJSON: String)
 data class BatteryRow(val ts: Long, val soc: Double?, val mv: Int?, val charging: Boolean? = null)
+/** One stored event row read for [com.noop.protocol.ChargerState]. */
+data class ChargerEdgeRow(val ts: Long, val kind: String)
 data class Spo2Row(val ts: Long, val red: Int, val ir: Int)
 /**
  * A skin-temperature reading at [ts], plus the two AUXILIARY thermal channels that ride the same 5/MG
@@ -578,6 +580,22 @@ class WhoopRepository(
     fun stepDataRevisionSignature(deviceId: String, onset: Long, endExclusive: Long): String =
         stepRevisionIndex.signature(deviceId, onset, endExclusive)
 
+    /**
+     * [samples] with each missing `charging` filled from the device's stored charger edges: the latest at
+     * or before the batch's first sample, and every one inside the batch. A batch whose samples all carry
+     * a bit reads nothing.
+     */
+    internal suspend fun withChargerState(deviceId: String, samples: List<BatteryRow>): List<BatteryRow> {
+        if (samples.none { it.charging == null }) return samples
+        val from = samples.minOf { it.ts }
+        val to = samples.maxOf { it.ts }
+        val prior = dao.chargerEdgesBefore(deviceId, from)
+        val newest = prior.firstOrNull()?.ts
+        val edges = (prior.filter { it.ts == newest } + dao.chargerEdgesBetween(deviceId, from, to))
+            .map { com.noop.protocol.ChargerState.Edge(it.ts, it.kind) }
+        return com.noop.protocol.ChargerState.resolve(samples, edges)
+    }
+
     /** All DAO writes for one decoded chunk share the Room transaction opened by [insert]. */
     private data class InsertResult(
         val counts: InsertCounts,
@@ -620,8 +638,11 @@ class WhoopRepository(
         if (fillFrom != null && fillTo != null) dao.flagWhoop5RrFill(deviceId, fillFrom, fillTo)
         val evIds = if (streams.events.isEmpty()) emptyList() else
             dao.insertEvents(streams.events.map { EventRow(deviceId, it.ts, it.kind, it.payloadJSON) })
+        // A WHOOP 5.0/MG sample carries no charging bit: fill it from the strap's charger edges, this batch's
+        // included (written just above). Twin of Swift `WhoopStore.withChargerState`.
         val batIds = if (streams.battery.isEmpty()) emptyList() else
-            dao.insertBattery(streams.battery.map { BatterySample(deviceId, it.ts, it.soc, it.mv, it.charging) })
+            dao.insertBattery(withChargerState(deviceId, streams.battery)
+                .map { BatterySample(deviceId, it.ts, it.soc, it.mv, it.charging) })
         val spo2Ids = if (streams.spo2.isEmpty()) emptyList() else
             dao.insertSpo2(streams.spo2.map { Spo2Sample(deviceId, it.ts, it.red, it.ir) })
         val skinIds = if (streams.skinTemp.isEmpty()) emptyList() else

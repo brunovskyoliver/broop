@@ -1071,10 +1071,15 @@ private func decodeWhoop5CommandResponse(_ frame: [UInt8], fb: FieldBuilder, sch
 ///
 /// `event` (u8 @10, EventNumber) and `event_timestamp` (u32 @12, real unix) are already set by the
 /// static +4 walk. This hook adds the BATTERY_LEVEL payload, which follows the same +4 rule as the
-/// rest of the 5.0 layout: 4.0's soc@17 / mv@21 / charge@26 become soc@21 / mv@25 / charge@30. Unlike
-/// the 5.0 COMMAND_RESPONSE (which switched to a DIRECT percent), the EVENT battery keeps 4.0's
-/// deci-percent (÷10) — confirmed by a clean monotonic discharge across a real capture (49.9 → 47.7 %).
-/// The same range guards as the 4.0 `event` post-hook fail closed.
+/// rest of the 5.0 layout: 4.0's soc@17 / mv@21 become soc@21 / mv@25. Unlike the 5.0 COMMAND_RESPONSE
+/// (which switched to a DIRECT percent), the EVENT battery keeps 4.0's deci-percent (÷10) — confirmed by a
+/// clean monotonic discharge across a real capture (49.9 → 47.7 %). The same range guards as the 4.0
+/// `event` post-hook fail closed.
+///
+/// No charging bit is decoded. 4.0's charge@26 shifted by +4 (@30) read 0 in all 3,980 BATTERY_LEVEL
+/// events of a real 5/MG, through 85 charge sessions in which SoC climbed about 1 % per 30 s, and every live
+/// event then reset the charging pill to "not charging" seconds after CHARGING_ON had set it. Charging on a
+/// 5/MG comes from the strap's charger edges instead (`ChargerState`).
 ///
 /// Event NAMES come only from the shared `EventNumber` schema, so an unnamed number the firmware emits
 /// (e.g. 123) stays the raw `0x7B(123)` set by the static walk and gets no payload here — never a name
@@ -1089,9 +1094,6 @@ private func decodeWhoop5Event(_ frame: [UInt8], fb: FieldBuilder, schema: Schem
     }
     if let mv = readDType(frame, 25, "u16", limit), (3000...4300).contains(mv) {
         fb.add(25, 2, "battery_mV", "battery", value: .int(mv), note: "mV")
-    }
-    if let ch = readDType(frame, 30, "u8", limit), ch <= 1 {
-        fb.add(30, 1, "battery_charging", "battery", value: .int(ch & 1))
     }
 }
 

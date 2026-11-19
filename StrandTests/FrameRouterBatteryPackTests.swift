@@ -67,6 +67,29 @@ final class FrameRouterBatteryPackTests: XCTestCase {
         XCTAssertNil(live.packSocPct)
     }
 
+    /// A 5/MG BATTERY_LEVEL payload (soc u16 @21, mV u16 @25) with the byte 4.0's charge bit shifts to (@30)
+    /// at 0, as it read through 85 real charge sessions. 43.2 %, 3986 mV: the 2026-10-25 07:58 reading.
+    private func batteryLevel5() -> [UInt8] {
+        var p = [UInt8](repeating: 0, count: 16)
+        p[5] = 0xB0; p[6] = 0x01      // 432 tenths
+        p[9] = 0x92; p[10] = 0x0F     // 3986 mV
+        return p
+    }
+
+    func testAWhoop5BatteryEventDoesNotClearAChargingEdge() {
+        let live = LiveState()
+        let r = router(live)
+        r.handle(frame: eventFrame(21)) // BATTERY_PACK_CONNECTED: a pack is on, not yet charging
+        XCTAssertNil(live.charging, "an attached pack is not charging; a depleted one never raises 7")
+        r.handle(frame: eventFrame(7))  // CHARGING_ON
+        XCTAssertEqual(live.charging, true)
+        r.handle(frame: eventFrame(3, payload: batteryLevel5()))
+        XCTAssertEqual(live.batteryPct ?? -1, 43.2, accuracy: 1e-9, "the fixture is a real battery event")
+        XCTAssertEqual(live.charging, true, "the 5/MG event has no charging bit to reset the edge with")
+        r.handle(frame: eventFrame(8))  // CHARGING_OFF
+        XCTAssertEqual(live.charging, false)
+    }
+
     func testPackDetachAndDisconnectClearTheReading() {
         let live = LiveState()
         let r = router(live)
