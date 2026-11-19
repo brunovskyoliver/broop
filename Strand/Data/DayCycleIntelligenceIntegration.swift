@@ -180,6 +180,25 @@ enum DayCycleIntelligenceIntegration {
                 wakeDayById[active.id] = active.displayDay; ownerById[active.id] = owner
             }
         }
+        // A calendar day no main sleep ends on gets its own cycle from its local midnight, instead of
+        // leaving its time inside the previous cycle and its row empty. Ordinary nights add nothing here.
+        // The split day keeps scoring Effort against the resting HR its time was scored with before.
+        var splitFromDay: [String: String] = [:]
+        let uncovered = DayCycleResolver.uncoveredDays(boundaries.compactMap { boundary in
+            wakeDayById[boundary.sleepId].map {
+                DayCycleResolver.WakeDayBoundary(sleepId: boundary.sleepId, onset: boundary.onset, wakeDay: $0)
+            }
+        }, now: now, offsetSec: offsetSec)
+        for item in uncovered {
+            guard let owner = ownerById[item.splitFrom] else { continue }
+            boundaries.append(.init(sleepId: item.sleepId, onset: item.onset))
+            wakeDayById[item.sleepId] = item.day; ownerById[item.sleepId] = owner
+            splitFromDay[item.day] = wakeDayById[item.splitFrom]
+            await trace?("stepsCycle split day=\(item.day) onsetTs=\(item.onset) from=\(item.splitFrom)")
+        }
+
+        let restingHRByDay = Dictionary(nights.map { ($0.daily.day, $0.daily.restingHr) }, uniquingKeysWith: { first, _ in first })
+        let nightRestingHR = { (key: String) in restingHRByDay[key].flatMap { $0 }.map(Double.init) }
 
         let windows = PhysiologicalSteps.cycleWindows(boundaries, now: now)
         cache.cycles = cache.cycles.filter { entry in windows.contains(where: { $0.sleepId == entry.key }) }
@@ -204,7 +223,7 @@ enum DayCycleIntelligenceIntegration {
             let owners = ([fallback] + physiologyOwners).reduce(into: [String]()) {
                 if !$0.contains($1) { $0.append($1) }
             }
-            let restingHR = nights.first(where: { $0.daily.day == day })?.daily.restingHr.map(Double.init)
+            let restingHR = nightRestingHR(day) ?? splitFromDay[day].flatMap(nightRestingHR)
                 ?? StrainScorer.defaultRestingHR
             let effectiveMaxHR = maxHROverride ?? (profile.age > 0 ? StrainScorer.tanakaHRmax(age: profile.age) : nil)
             // Every pass re-read each cycle's full day of 1 Hz heart rate from every owner and re-scored it,
@@ -348,9 +367,10 @@ enum DayCycleIntelligenceIntegration {
             activeByWakeDay: actives)
     }
 
-    /// BMR seconds for one wake day: the cycle so far, at most 24 h. A cycle stretches over days when a night
-    /// has no detected sleep, and that one row must not read as several days of metabolism (7924 kcal on real
-    /// data before this cap).
+    /// BMR seconds for one wake day: the cycle so far, at most 24 h. A closed cycle no longer spans a whole
+    /// sleepless day (`DayCycleResolver.uncoveredDays` gives that day its own cycle), but the open cycle can
+    /// still run up to the 40 h cap, and that one row must not read as several days of metabolism (7924 kcal
+    /// on real data before this cap).
     static func creditedSeconds(onset: Int, endExclusive: Int, now: Int) -> Double {
         Double(min(86_400, max(0, min(endExclusive, now) - onset)))
     }

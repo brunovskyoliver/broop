@@ -205,11 +205,38 @@ internal object PhysiologicalStepCycleEngine {
             }
         }
 
+        // A calendar day no main sleep ends on gets its own cycle from its local midnight, instead of leaving
+        // its time inside the previous cycle and its row empty. Ordinary nights add nothing here. The split
+        // day keeps scoring Effort against the resting HR its time was scored with before.
+        val splitFromDay = HashMap<String, String>()
+        val uncovered = DayCycleResolver.uncoveredDays(
+            boundaries.mapNotNull { boundary ->
+                dayBySleepId[boundary.sleepId]?.let {
+                    DayCycleResolver.WakeDayBoundary(boundary.sleepId, boundary.onset, it)
+                }
+            },
+            nowSeconds,
+            tzOffsetSeconds,
+        )
+        for (item in uncovered) {
+            val owner = ownerBySleepId[item.splitFrom] ?: continue
+            boundaries += PhysiologicalSteps.CycleBoundary(item.sleepId, item.onset)
+            dayBySleepId[item.sleepId] = item.day
+            ownerBySleepId[item.sleepId] = owner
+            dayBySleepId[item.splitFrom]?.let { splitFromDay[item.day] = it }
+            stepsTraceSink?.invoke("stepsCycle split day=${item.day} onsetTs=${item.onset} from=${item.splitFrom}")
+        }
+
         val stepsByWakeDay = HashMap<String, Int>()
         val strainByWakeDay = HashMap<String, Double>()
         val caloriesByWakeDay = HashMap<String, Double>()
         val activeByWakeDay = HashMap<String, Double>()
         val workoutCountByWakeDay = HashMap<String, Int>()
+        // First night per day, as `firstOrNull` read it; a night without a resting HR stays absent.
+        val restingHrByDay = HashMap<String, Double>()
+        for (night in scoredNights.distinctBy { it.daily.day }) {
+            night.daily.restingHr?.let { restingHrByDay[night.daily.day] = it.toDouble() }
+        }
         val windows = PhysiologicalSteps.cycleWindows(boundaries, nowSeconds)
         val allDetectedSleep = sleepContext.distinctBy { it.start to it.end }
         cache.keys.retainAll(windows.mapTo(HashSet()) { it.sleepId })
@@ -218,7 +245,7 @@ internal object PhysiologicalStepCycleEngine {
             val wakeDay = dayBySleepId[window.sleepId] ?: continue
             val fallbackOwner = ownerBySleepId[window.sleepId] ?: continue
             // DAO ranges are inclusive. Keep adjacent physiological cycles disjoint.
-            val restingHr = scoredNights.firstOrNull { it.daily.day == wakeDay }?.daily?.restingHr?.toDouble()
+            val restingHr = restingHrByDay[wakeDay] ?: splitFromDay[wakeDay]?.let { restingHrByDay[it] }
                 ?: StrainScorer.defaultRestingHR
             val effectiveMaxHr = maxHROverride
                 ?: profile.age.takeIf { it > 0 }?.let { StrainScorer.tanakaHRmax(it.toDouble()) }

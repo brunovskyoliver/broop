@@ -51,6 +51,60 @@ object DayCycleResolver {
         else (dayNumber + 1) * SleepStageTotals.SECONDS_PER_DAY - tzOffsetSeconds
     }
 
+    /** A cycle boundary with the calendar day whose row it fills (the day its main sleep ends on). */
+    data class WakeDayBoundary(val sleepId: String, val onset: Long, val wakeDay: String)
+
+    /**
+     * A calendar day that no main sleep ends on, cut out of the cycle that would otherwise run across it.
+     * [sleepId] is `synthetic:<day>`, the id the open-cycle cap in [activeWindow] gives the same day;
+     * [onset] is local midnight at the start of [day]; [splitFrom] is the boundary it was cut from.
+     */
+    data class UncoveredDay(val sleepId: String, val onset: Long, val day: String, val splitFrom: String)
+
+    /**
+     * Calendar days that fall strictly between two consecutive wake days, or between the last wake day and
+     * the calendar day of [now], each with a boundary at its own local midnight.
+     *
+     * A night with no detected main sleep (strap on the charger, a night spent awake) has no boundary, so
+     * the cycle before it ran to the NEXT night's onset: one row carried two days of steps, Effort and
+     * energy and the following row was empty (2026-11-08 and 2026-11-13 on real data). Cutting at the
+     * orphan day's midnight is the window the Home screens already read for that day, since a day with no
+     * onset marker falls back to its calendar bound. Consecutive wake days yield nothing, so ordinary
+     * cycles are unchanged. Only days that have fully started are cut, and the day of [now] is never cut
+     * by this rule: a sleep ending later today may still claim it. The live cap in [activeWindow] covers
+     * the open cycle before that, and its boundary must be passed in so the day counts as claimed.
+     *
+     * Swift twin: `DayCycleResolver.uncoveredDays`.
+     */
+    fun uncoveredDays(boundaries: List<WakeDayBoundary>, now: Long, tzOffsetSeconds: Long): List<UncoveredDay> {
+        val ordered = boundaries.asSequence()
+            .filter { it.onset <= now }
+            .distinctBy { it.sleepId }
+            .sortedWith(compareBy<WakeDayBoundary> { it.onset }.thenBy { it.sleepId })
+            .toList()
+        val claimed = ordered.mapTo(HashSet()) { it.wakeDay }
+        val today = AnalyticsEngine.dayString(now, tzOffsetSeconds)
+        val output = ArrayList<UncoveredDay>()
+        for ((index, item) in ordered.withIndex()) {
+            val next = ordered.getOrNull(index + 1)
+            val nextDay = next?.wakeDay ?: today
+            val nextOnset = next?.onset ?: now
+            val dayStart = AnalyticsEngine.dayStartUtcSeconds(item.wakeDay)
+            // A malformed key parses to 0; walking from 1970 would invent decades of days.
+            if (AnalyticsEngine.dayString(dayStart) != item.wakeDay) continue
+            var midnight = dayStart + SleepStageTotals.SECONDS_PER_DAY - tzOffsetSeconds
+            while (midnight < nextOnset) {
+                val day = AnalyticsEngine.dayString(midnight, tzOffsetSeconds)
+                if (day >= nextDay) break
+                if (midnight > item.onset && day !in claimed) {
+                    output += UncoveredDay("synthetic:$day", midnight, day, item.sleepId)
+                }
+                midnight += SleepStageTotals.SECONDS_PER_DAY
+            }
+        }
+        return output
+    }
+
     /**
      * Resolve the active window. Sleep-onset mode stays open across midnight even when awake coverage is
      * unavailable. The absolute cap still prevents a stale sleep boundary from remaining active forever.
