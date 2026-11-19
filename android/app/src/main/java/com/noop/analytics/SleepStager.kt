@@ -1276,6 +1276,49 @@ object SleepStager {
         return asleep.toDouble() / inBlock.size.toDouble() >= morningReonsetBandAsleepFrac
     }
 
+    /** Band sleep_state values that mean the strap itself scored the wearer awake: 0 ("wake") and 3 ("up").
+     *  1 ("still") is ambiguous and 2 is asleep; neither counts. Mirrors Swift `bandAwakeStates`. */
+    internal val bandAwakeStates: Set<Int> = setOf(0, 3)
+
+    /** Shortest terminal band-awake run, in minutes inside the night, that ends the night early. Below this
+     *  the trim would sit inside the few minutes the band itself lags a real awakening. Mirrors Swift
+     *  `terminalBandWakeMinMin`. */
+    const val terminalBandWakeMinMin: Int = 10
+
+    /** A band stretch with a gap this long (minutes) is not observed evidence. Mirrors Swift
+     *  `unobservedGapMin`, which Swift also uses for its observed-bounds trims (not ported here yet). */
+    const val unobservedGapMin: Int = 5
+
+    /**
+     * The night ended where the strap's own band says the wearer woke, when it says so for good.
+     *
+     * Awake and still in bed after the final awakening reads as sleep to the gravity spine, and V2 stages it
+     * REM: `motionQuiescent` holds the raised HR back from the awake emission while the REM emission and the
+     * late-night clock ramp both gain from it. The band switches 2 → 3 at the awakening and stays awake until
+     * the run ends, so the night is cut at the first sample of that TERMINAL awake run when every in-run band
+     * sample after the last non-awake one reads awake, the run lasts at least [terminalBandWakeMinMin], and
+     * no gap in it (or to the run end) reaches [unobservedGapMin]. A mid-night awakening the band returns
+     * from to asleep is not terminal and is untouched, and so is a snooze the band keeps scoring asleep.
+     * A run with no non-awake band sample is left to the other gates, and no band stream is a no-op.
+     * Mirrors Swift `SleepStager.offsetTrimmedToBandWake`.
+     */
+    internal fun offsetTrimmedToBandWake(p: Period, bandSleepState: List<Pair<Long, Int>>): Period {
+        val inside = bandSleepState.filter { it.first in p.start..p.end }.sortedBy { it.first }
+        val lastNonAwake = inside.indexOfLast { it.second !in bandAwakeStates }
+        if (lastNonAwake < 0 || lastNonAwake + 1 >= inside.size) return p
+        val cut = inside[lastNonAwake + 1].first
+        if (p.end - cut < terminalBandWakeMinMin * 60L) return p
+        val gapS = unobservedGapMin * 60L
+        var prev = cut
+        for (i in (lastNonAwake + 1) until inside.size) {
+            val ts = inside[i].first
+            if (ts - prev >= gapS) return p
+            prev = ts
+        }
+        if (p.end - prev >= gapS) return p
+        return Period(stage = p.stage, start = p.start, end = cut)
+    }
+
     // ── Band sleep_state WAKE-veto (recover strap-disputed false wakes) ───────
     //
     // NOOP's cardiorespiratory stager is known to OVER-CALL wake: an EEG-free stager reads a still, low-HR
@@ -1692,7 +1735,8 @@ object SleepStager {
         var minSleepDrops = 0
         var firstSleepStart = Long.MAX_VALUE
         var lastSleepEnd = 0L
-        for (p in runs) {
+        for (run in runs) {
+            var p = run
             if (p.stage != "sleep") continue
             runIndex += 1
             sleepRunsSeen += 1
@@ -1735,6 +1779,22 @@ object SleepStager {
                 traceSink?.invoke(SleepStagerTrace.runLine(runIndex, p.start, p.end,
                     SleepStagerTrace.Verdict.DROPPED, "offWrist", "offWristFrac=${SleepStagerTrace.round2(offFrac)} max=$maxOffWristSleepFraction"))
                 continue
+            }
+            // Terminal band-awake trim, at the same point in the ladder as Swift (after the off-wrist gate,
+            // before the daytime guard and staging). Swift's observed-bounds trims sit just before it there and
+            // are not ported, so this is the only trim on this side.
+            val endBeforeBandTrim = p.end
+            p = offsetTrimmedToBandWake(p, bandSleepState)
+            if (p.end != endBeforeBandTrim) {
+                traceSink?.invoke(SleepStagerTrace.runLine(runIndex, p.start, p.end,
+                    SleepStagerTrace.Verdict.KEPT, "bandWakeTrim",
+                    "trimmedMin=${(endBeforeBandTrim - p.end) / 60} minRunMin=$terminalBandWakeMinMin"))
+                if ((p.end - p.start) <= minSleepS) {
+                    traceSink?.invoke(SleepStagerTrace.runLine(runIndex, p.start, p.end,
+                        SleepStagerTrace.Verdict.DROPPED, "bandWakeTrim",
+                        "spanMin=${(p.end - p.start) / 60} minSleepMin=$minSleepMin"))
+                    continue
+                }
             }
             // Daytime false-sleep guard (#90): a window centered in the local daytime band
             // must clear a stricter bar (≥daytimeMinSleepMin AND a real resting-HR dip).
