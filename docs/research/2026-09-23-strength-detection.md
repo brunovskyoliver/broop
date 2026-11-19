@@ -79,3 +79,55 @@ Replay: the iPhone production store copied on 2026-11-16, 31 days with motion da
 The 32 added sessions were 9–43 min stretches averaging 100–113 bpm, plus two existing walks that grew. None was a labelled session. `splitDropped` totals 25 over the 31 days on the shipped detector; those are the runs worth reading if a lift is ever reported missing.
 
 Four lifts from one person is a small set, and every one of them had a walk attached, which is the case the shipped path already handles. "Found" here means covered, not found whole: a 2026-11-18 rerun on a later copy of the same store returns each of these lifts in two or three pieces (the lift plus the walk in or out, 2.5 on average), so the 2.2 above did not reproduce exactly. A lift with no walk either side remains untested on real data. The Android twin is unchanged and has no elevated cores at all.
+
+## Update 2026-11-18: one session per lift, saved without asking
+
+Since #2220 detection only offered a card, the card lasted two days, and the detected-workout notification was retired. On the wearer's phone nobody opened the card, so every lift from 10-29 to 11-17 was detected and lost.
+
+Replay (R3): the iPhone production store copied on 2026-11-18, 31 days with motion data (2026-10-19 → 11-18), Tanaka HRmax for age 19 (195), stored daily resting HR, profile 66 kg / 170 cm. Labels: 14 Apple Watch strength workouts, 12 with strap HR (10-25 strap charging, 11-03 off wrist). The Watch is a second estimate, not ground truth (R8).
+
+```bash
+cd Tools/WorkoutBench
+swift run -c release workoutbench --db <copy> --age 19 --weight 66 --height 170 \
+  --labels watch_workouts_stats.csv --tz Europe/Copenhagen --from 2026-10-19 --list-unlabelled --funnel
+```
+
+### What fragmented the lifts
+
+Minute-by-minute strips of strap HR, gait ticks and motion around each lift showed three mechanisms:
+
+1. **Grip dropouts.** 11-07, 11-10 and 11-12 each had a 7–9 min hole in strap HR mid-lift. The stitch refused any gap the sensor saw less than half of. Fixed: a gap may be bridged when its unseen time adds up to at most 10 min (`stitchMaxDropoutS`). The 20 min gap cap and the walking-streak check still apply.
+2. **The walks either side.** Every session has a walk in at 90–115 bpm, which the Watch never includes. Every session also has a walk out at 105–145 bpm, which the Watch includes in November (11-06, 11-08, 11-10, 11-16, 11-17) and not in October. Strap HR, gait and motion do not tell the two months apart, so no rule can, and none was tuned to. Two attempts were measured and withdrawn: absorbing a walk between two non-walking pieces pulled the walk home into the lift and turned 5 of 9 strength calls into walk; trimming activity-tier sessions to their elevated edges cut into lift starts (start error 5.7 → 7.7 min).
+3. **Pottering after the lift** comes back as its own `other`/`strength` piece at 100–108 bpm (11-06 17:05–18:21, 11-08 11:43–12:20). It stays a piece, but the auto-save bar below never saves it.
+
+### The auto-save bar (`WorkoutAutoSave`)
+
+Classifier confidence does not separate lifts from walks (lifts 0.26–0.36, unlabelled bouts the same), so it is not the bar. A session is saved when it lasts at least 20 min, has HR in at least 70% of its minutes, averages at least 40% HRR (the detector's own activity floor), and either it is a lift (not classed walk, strength score at least `minPlausibleScore`, gravity variance at least 0.08) or it is a run or ride (classed so at confidence 0.40 that also cleared the zone-2 bar). The 0.08 floor comes from finding 4 above (lifts 0.08–0.13 on 2026-09-23), not from this month: the eleven lifts found here read 0.087–0.126, and the pottering pieces 0.075–0.082.
+
+| | Before (`67477fc0`) | After (`12302e0f`) |
+| --- | --- | --- |
+| Scorable lifts found | 11 of 12 | 11 of 12 |
+| Pieces per found lift | 2.9 | 2.7 |
+| Main session mean abs start / end error | 5.7 / 10.9 min | 3.6 / 9.0 min |
+| Lift classed strength by overlap | 9 of 11 | 9 of 11 |
+| Lifts saved | 0 (suggestion only) | 11 of 12, each as exactly one session, none twice |
+| Saved over no label | – | 3 (10-28 45 min avg 129; 11-13 39 min avg 110; 11-15 46 min avg 110) |
+| Sessions | 127 (4.1/day) | 125 (4.0/day) |
+
+Temporal split (R5), with no parameter fitted on either half: October 4 of 5 lifts saved and 1 extra save, November 7 of 7 and 2 extra saves. A floor fitted on the four October lifts alone (0.089) would have kept 6 of the 7 November ones.
+
+The one missed lift is 11-01. Strap HR sat around 100 bpm and the Watch averaged 106, both under this wearer's activity floor (rest 49 + 40% HRR ≈ 107 bpm). Neither the detector nor any HR-based bar can tell it from a walk. This is unmeasurable on this data rather than tunable (R8).
+
+The November end errors (−11 to −31 min) are the walk out described above. The lift itself ends within a few minutes of where HR and motion say it does.
+
+### HR, Effort and energy of a saved workout
+
+The saved row's avg/max HR, Effort and energy come from the raw 1 Hz strap window. NOOP does not smooth or downsample the WHOOP stream on ingest, and the session max equals the raw strap max inside the Watch window on every lift (e.g. 11-08 159 = 159). The deficit against the Watch is in the strap's own HR: the median paired difference is 0 to −3 bpm, but at the Watch's top-decile moments the strap reads 5–28 bpm lower (11-07: Watch 168 at 09:45:46, strap at most 129 within ±60 s). The cause is firmware-side and cannot be recovered without inventing data.
+
+Energy per minute of the saved lift sessions against the Watch (active plus basal over the same minutes): median 1.02×, range 0.91–1.15×, so bout energy is not the source of the daily energy gap.
+
+### Not done
+
+- Retuning the classifier. Two lifts still come back `other`, and the bar saves them as strength on motion evidence. Twelve lifts from one person are not enough to retune it on.
+- The trailing walk. Whether the walk out belongs to the workout is the wearer's convention, not a strap fact.
+- Android session stats. The Kotlin detector now splits and stitches exactly as Swift does (oracle-tested), but per-session zones, Effort and calories still weight samples equally, where Swift weights them by credited seconds.
