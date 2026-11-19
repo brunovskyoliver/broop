@@ -32,6 +32,10 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     var onEveningReviewTapped: (() -> Void)?
     var onWorkoutDetectedReview: ((_ startTs: Int, _ endTs: Int, _ edit: Bool) -> Void)?
     var onWorkoutDetectedDismiss: ((_ startTs: Int, _ endTs: Int) -> Void)?
+    /// 2026-11-18 auto-save actions: Delete on a saved workout; Save and "Not a workout" on a suggestion.
+    var onAutoSavedDelete: ((_ startTs: Int, _ endTs: Int) -> Void)?
+    var onSuggestionSave: ((_ startTs: Int, _ endTs: Int) -> Void)?
+    var onSuggestionDismiss: ((_ startTs: Int, _ endTs: Int) -> Void)?
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
@@ -58,6 +62,21 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         } else if category == StandReminderNotifier.categoryId {
             if response.actionIdentifier == StandReminderNotifier.actionPauseId {
                 Task { @MainActor in StandReminderNotifier.pauseToday() }
+            }
+        } else if category == WorkoutDetectedNotifier.savedCategoryId
+                    || category == WorkoutDetectedNotifier.suggestedCategoryId {
+            let info = response.notification.request.content.userInfo
+            let startTs = info[WorkoutDetectedNotifier.infoStartTs] as? Int
+            let endTs = info[WorkoutDetectedNotifier.infoEndTs] as? Int
+            switch response.actionIdentifier {
+            case WorkoutDetectedNotifier.actionDeleteId:
+                if let startTs, let endTs { onAutoSavedDelete?(startTs, endTs) }
+            case WorkoutDetectedNotifier.actionSaveId:
+                if let startTs, let endTs { onSuggestionSave?(startTs, endTs) }
+            case WorkoutDetectedNotifier.actionNotWorkoutId:
+                if let startTs, let endTs { onSuggestionDismiss?(startTs, endTs) }
+            default:
+                onWorkoutDetectedReview?(startTs ?? 0, endTs ?? 0, false)
             }
         } else if category == WorkoutDetectedNotifier.categoryId {
             let info = response.notification.request.content.userInfo

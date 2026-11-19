@@ -854,6 +854,12 @@ final class IntelligenceEngine: ObservableObject {
         await analyzeRecentPass(maxDays: maxDays, force: force, skipIfUnchanged: skipIfUnchanged,
                                 triggerLabel: triggerLabel, preserveUnscoredHistory: preserveUnscoredHistory,
                                 onPersisted: onPersisted)
+        // 2026-11-18: save confident detected workouts and announce them (and the newest open suggestion).
+        // On EVERY invocation, including passes the fingerprint gate skipped: a session becomes due once it
+        // has been over for `WorkoutDetector.stitchMaxGapS`, which can elapse during a quiet tick. The
+        // per-day detection cache keeps a quiet tick from re-detecting unchanged days.
+        guard !Task.isCancelled else { return }
+        await WorkoutDetectedNotifier.onAnalysisPass(repository: repo)
     }
 
     private func analyzeRecentPass(maxDays: Int, force: Bool, skipIfUnchanged: Bool,

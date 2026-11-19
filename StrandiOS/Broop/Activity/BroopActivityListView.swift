@@ -873,7 +873,8 @@ private struct BroopActivityStartControl: View {
     }
 }
 
-/// Auto-detected workout suggestions, one card per open session from the last two days: Save creates the
+/// Auto-detected workout suggestions, one card per open session from the last seven days (sessions that
+/// clear `WorkoutAutoSave` are saved by the analysis pass and leave the card): Save creates the
 /// workout, Not a workout dismisses it for good. The header names the activity the classifier suggests
 /// (which is the sport Save stores) and the day; the sentence below carries the times only, so the day
 /// is stated once.

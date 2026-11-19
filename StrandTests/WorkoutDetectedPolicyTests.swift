@@ -190,4 +190,23 @@ final class WorkoutDetectedPolicyTests: XCTestCase {
         XCTAssertNil(WorkoutDetectedPolicy.classLabel("other"))
         XCTAssertNil(WorkoutDetectedPolicy.classLabel(nil))
     }
+
+    // MARK: - auto-save copy (2026-11-18)
+
+    func testSavedCopyNamesTheSportAndWhereItCameFrom() {
+        let (title, body) = WorkoutDetectedPolicy.savedCopy(
+            C(startTs: 0, endTs: 45 * 60, avgHr: 116, maxHr: 150, suggestedClass: "strength"),
+            sport: "Strength Training")
+        XCTAssertEqual(title, "Workout saved")
+        XCTAssertEqual(body, "Strength Training · 45 min · avg 116 bpm · peaked 150 bpm. "
+                       + "Detected from your strap — delete it if it was not a workout.")
+    }
+
+    func testSuggestedCopyAsksAndHedgesTheClass() {
+        XCTAssertEqual(WorkoutDetectedPolicy.suggestedCopy(C(startTs: 0, endTs: 32 * 60, avgHr: 108, maxHr: 131,
+                                                             suggestedClass: "walk")).body,
+                       "32 min · avg 108 bpm · peaked 131 bpm — looks like Walking. Save it?")
+        XCTAssertEqual(WorkoutDetectedPolicy.suggestedCopy(C(startTs: 0, endTs: 32 * 60, avgHr: 108, maxHr: nil)).body,
+                       "32 min · avg 108 bpm. Save it?")
+    }
 }

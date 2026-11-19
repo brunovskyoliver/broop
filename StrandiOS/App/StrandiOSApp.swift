@@ -59,7 +59,7 @@ struct StrandiOSApp: App {
         // registered rather than set outright, so a future category can't be silently dropped here.
         let center = UNUserNotificationCenter.current()
         center.getNotificationCategories { existing in
-            center.setNotificationCategories(existing.union([WorkoutDetectedNotifier.category, StandReminderNotifier.category]))
+            center.setNotificationCategories(existing.union(WorkoutDetectedNotifier.categories.union([StandReminderNotifier.category])))
         }
         // K5: tapping a scheduled morning-brief notification routes to Coach via the shared NavRouter.
         let router = NavRouter()
@@ -115,6 +115,17 @@ struct StrandiOSApp: App {
         let repo = model.repo
         NotificationPresenter.shared.onWorkoutDetectedDismiss = { start, end in
             Task { await repo.dismissDetectedWorkout(startTs: start, endTs: end) }
+        }
+        // 2026-11-18 auto-save: Delete on a saved workout, Save / "Not a workout" on a suggestion. None
+        // navigates; a plain tap on either routes through `onWorkoutDetectedReview` above.
+        NotificationPresenter.shared.onAutoSavedDelete = { start, end in
+            Task { await repo.deleteAutoSavedWorkout(startTs: start, endTs: end) }
+        }
+        NotificationPresenter.shared.onSuggestionSave = { start, end in
+            Task { await repo.saveDetectedSuggestion(startTs: start, endTs: end) }
+        }
+        NotificationPresenter.shared.onSuggestionDismiss = { start, end in
+            Task { await repo.dismissDetectedSuggestion(startTs: start, endTs: end) }
         }
         // Settings → "Keep screen on while syncing". Wired once here, not as another modifier on `body`.
         SyncKeepAwake.shared.attach(to: model.live)

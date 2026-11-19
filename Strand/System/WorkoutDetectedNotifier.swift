@@ -2,28 +2,22 @@ import Foundation
 import StrandAnalytics
 import UserNotifications
 
-// MARK: - Detected-workout notification
+// MARK: - Detected-workout notifications
 //
-// RETIRED PATH: nothing writes new `sport="detected"` rows, so no pass calls `onAnalysisPass` and the
-// settings toggles are gone. The category and action handlers stay for notifications already delivered.
+// 2026-11-18: revived for auto-save. After every analysis pass, `onAnalysisPass` runs the auto-save
+// (`Repository.runWorkoutAutoSave`) and then posts:
+//  - one notification per workout that pass saved ("Workout saved"), with a Delete action;
+//  - at most one for the newest open suggestion of `WorkoutAutoSave.minDurationS` or longer that has not
+//    been announced yet ("Looks like a workout"), with Save and "Not a workout" actions.
+// The settled-token set below keeps a suggestion from being announced twice as its bounds drift between
+// passes. Posting is gated on the `workoutDetectedNotify` toggle (default ON) and on the system
+// permission; the auto-save itself is not, so turning notifications off never loses a workout.
 //
-// The original design was a single opt-in, default-OFF FYI: after an analysis pass persists `sport="detected"` bouts
-// (IntelligenceEngine re-derives them every run), post one local notification for the newest
-// detected bout whose end is at least `WorkoutDetectedPolicy.notifySettleSec` old. The row is
-// already saved — the notification is informational, with Edit / "Not a workout" actions so the
-// user can relabel or durably dismiss it. WHOOP auto-saves detected "Activity" rows the same way;
-// the wording below is NOOP's own.
+// Battery: the detection reads what the pass already wrote and is cached per day (`detectWorkouts`),
+// so a quiet tick re-detects only the day whose streams changed.
 //
-// Battery contract: this adds NO work of its own — no timer, no BLE, no sensor reads. The check
-// rides the existing `analyzeRecent` cadence (offload-driven and the 15-min tick): when the
-// preference is OFF it costs one UserDefaults read per call; when ON it adds one bounded
-// workouts read over a 36-hour window.
-//
-// Dedup is by SPAN OVERLAP, not exact tokens: the engine's re-detect can drift a bout's startTs
-// by minutes between passes, so the persisted "startTs:endTs" set is consulted the same way the
-// dismissed-detected list is (WorkoutSource.isDismissed). Once a span is settled, every overlapping
-// re-derive stays silent — and every eligible token from the pass is marked, so the same pass can
-// never re-notify an older sibling later.
+// The legacy category (Edit / "Not a workout" on a persisted `sport="detected"` row) stays registered for
+// notifications delivered by older builds.
 
 /// Pure policy + copy for the detected-workout notification — no UserNotifications types, so the
 /// decision logic is pinned by unit tests independently of the notification plumbing. Kotlin twin:
@@ -166,129 +160,153 @@ enum WorkoutDetectedPolicy {
         return ("Activity detected",
                 metricsText(c) + " — looks like \(label). " + tail)
     }
+
+    /// "Workout saved" copy for a session the auto-save stored. `sport` is the stored sport's display
+    /// name. The body says where it came from, so a wrong save reads as the detector's, not the wearer's.
+    static func savedCopy(_ c: Candidate, sport: String) -> (title: String, body: String) {
+        ("Workout saved", "\(sport) · " + metricsText(c) + ". Detected from your strap — delete it if it was not a workout.")
+    }
+
+    /// "Looks like a workout" copy for an open suggestion: the hedged class name when there is one.
+    static func suggestedCopy(_ c: Candidate) -> (title: String, body: String) {
+        guard let label = classLabel(c.suggestedClass) else {
+            return ("Looks like a workout", metricsText(c) + ". Save it?")
+        }
+        return ("Looks like a workout", metricsText(c) + " — looks like \(label). Save it?")
+    }
 }
 
-/// The notification plumbing: authorization, the Edit / "Not a workout" category, posting, and the
-/// post-pass eligibility check `IntelligenceEngine.analyzeRecent` calls.
+/// The notification plumbing: categories, posting, and the post-pass hook `IntelligenceEngine` calls.
 enum WorkoutDetectedNotifier {
 
-    /// `UNNotificationCategory` / action identifiers. The category is registered at launch by the
-    /// app roots (StrandApp / StrandiOSApp); actions are routed by `NotificationPresenter`.
+    /// Legacy category for notifications delivered by builds that persisted `sport="detected"` rows.
     static let categoryId = "workout.detected"
     static let actionEditId = "workout.detected.edit"
     static let actionDismissId = "workout.detected.dismiss"
+    /// A workout the auto-save stored. Delete removes it and dismisses its span.
+    static let savedCategoryId = "workout.autosaved"
+    static let actionDeleteId = "workout.autosaved.delete"
+    /// An open suggestion. Save stores it as the card would; "Not a workout" dismisses it.
+    static let suggestedCategoryId = "workout.suggested"
+    static let actionSaveId = "workout.suggested.save"
+    static let actionNotWorkoutId = "workout.suggested.dismiss"
 
-    /// userInfo keys — local epoch-second identifiers only, no health payload leaves the app.
+    /// userInfo keys — local epoch-second identifiers only; the handlers re-resolve the row or suggestion.
     static let infoStartTs = "startTs"
     static let infoEndTs = "endTs"
 
-    /// UserDefaults keys. `enabledDefaultsKey` is the Settings toggle ("workoutDetectedNotify",
-    /// default OFF); `notifiedDefaultsKey` holds the settled span tokens.
+    /// `enabledDefaultsKey` is the Settings toggle, default ON since auto-save (a saved workout nobody is
+    /// told about is how eleven lifts went unseen); `notifiedDefaultsKey` holds announced suggestion spans.
     static let enabledDefaultsKey = "workoutDetectedNotify"
     static let notifiedDefaultsKey = "workouts.detectedNotified"
 
-    /// Distinct request identifier per bout so a re-post for the same span replaces rather than
-    /// stacks; a different span posts alongside (the newest-wins policy means at most one is
-    /// outstanding in practice).
+    /// How long a suggestion stays on the card (and so how far back auto-save looks once a day).
+    static let suggestionLifetimeDays = 7
+    static let fullScanDayKey = "workouts.autoSaveFullScanDay"
+
     static func requestId(startTs: Int) -> String { "workout.detected.\(startTs)" }
 
-    static var enabled: Bool { UserDefaults.standard.bool(forKey: enabledDefaultsKey) }
+    static var enabled: Bool { UserDefaults.standard.object(forKey: enabledDefaultsKey) as? Bool ?? true }
 
-    /// The category with its two actions. Edit opens the detected row for relabel; "Not a workout"
-    /// durably dismisses it (same path as the Workouts row menu). Neither unlocks data — the span
-    /// tokens ride in userInfo and the handlers re-resolve the row.
-    static var category: UNNotificationCategory {
-        let edit = UNNotificationAction(
-            identifier: actionEditId,
-            title: String(localized: "Edit"),
-            options: [.foreground])
-        let dismiss = UNNotificationAction(
-            identifier: actionDismissId,
-            title: String(localized: "Not a workout"),
-            options: [.destructive])
-        return UNNotificationCategory(identifier: categoryId, actions: [edit, dismiss],
-                                      intentIdentifiers: [])
+    /// Every category this notifier has posted under, registered at launch.
+    static var categories: Set<UNNotificationCategory> {
+        let edit = UNNotificationAction(identifier: actionEditId, title: String(localized: "Edit"),
+                                        options: [.foreground])
+        let dismiss = UNNotificationAction(identifier: actionDismissId, title: String(localized: "Not a workout"),
+                                           options: [.destructive])
+        let delete = UNNotificationAction(identifier: actionDeleteId, title: String(localized: "Delete"),
+                                          options: [.destructive])
+        let save = UNNotificationAction(identifier: actionSaveId, title: String(localized: "Save"), options: [])
+        let notWorkout = UNNotificationAction(identifier: actionNotWorkoutId,
+                                              title: String(localized: "Not a workout"), options: [.destructive])
+        return [
+            UNNotificationCategory(identifier: categoryId, actions: [edit, dismiss], intentIdentifiers: []),
+            UNNotificationCategory(identifier: savedCategoryId, actions: [delete], intentIdentifiers: []),
+            UNNotificationCategory(identifier: suggestedCategoryId, actions: [save, notWorkout], intentIdentifiers: []),
+        ]
     }
 
-    /// The same authorization request every notifier makes — called when the user flips the
-    /// Settings toggle ON, never at launch or on a schedule.
+    /// The same authorization request every notifier makes: from the Settings toggle, and from the first
+    /// pass that has something to say while the wearer has never been asked.
     static func requestAuthorization() {
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
-    /// Post-pass eligibility check. Called from `IntelligenceEngine.analyzeRecent` on every
-    /// invocation — real passes and fingerprint-skipped ones alike — because a bout's 600 s settle
-    /// window can elapse during quiet ticks with no new data. One notification per call at most;
-    /// safe to call from any pass because the settled-token set dedupes across process death.
-    ///
-    /// Reads `Repository.workoutRows(from:to:)` — the SAME dismissed-filtered, cross-source-deduped
-    /// read the Workouts list uses — so a bout is notified exactly as the user will see it, and a
-    /// dismissed or later-imported-overlapping row can never fire. That read is bounded (36 h
-    /// window ⇒ a handful of rows); when the preference is OFF the whole thing is one bool read.
+    /// Post-pass hook, called from `IntelligenceEngine.analyzeRecent` on every invocation, including passes
+    /// the fingerprint gate skipped: a session becomes due for saving once it has been over for
+    /// `WorkoutDetector.stitchMaxGapS`, which can elapse during a quiet tick.
     static func onAnalysisPass(repository: Repository) async {
+        // The first pass of each local day covers the whole suggestion lifetime, so a phone that was off
+        // for days still saves what the card would show; later passes cover the last two days.
+        let today = Int(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970)
+        let fullScan = UserDefaults.standard.integer(forKey: fullScanDayKey) != today
+        let (saved, open) = await repository.runWorkoutAutoSave(daysBack: fullScan ? suggestionLifetimeDays : 2)
+        if fullScan { UserDefaults.standard.set(today, forKey: fullScanDayKey) }
         guard enabled else { return }
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
-        guard settings.authorizationStatus == .authorized
-                || settings.authorizationStatus == .provisional else { return }
-
         let now = Int(Date().timeIntervalSince1970)
-        let rows = await repository.workoutRows(from: now - WorkoutDetectedPolicy.candidateWindowSec,
-                                                to: now)
-        let candidates = rows.filter { WorkoutSource.classify($0.source) == .detected }
-            .map { WorkoutDetectedPolicy.Candidate(startTs: $0.startTs, endTs: $0.endTs,
-                                                   avgHr: $0.avgHr, maxHr: $0.maxHr,
-                                                   suggestedClass: $0.suggestedClass) }
-        guard !candidates.isEmpty else { return }
-        let realSpans = rows.filter { WorkoutSource.classify($0.source) != .detected }
-            .map { (start: $0.startTs, end: $0.endTs) }
-        let dismissed = WorkoutSource.parseDismissedSpans(
-            UserDefaults.standard.stringArray(forKey: WorkoutSource.dismissedDefaultsKey) ?? [])
-        let settled = WorkoutSource.parseDismissedSpans(
-            UserDefaults.standard.stringArray(forKey: notifiedDefaultsKey) ?? [])
-
+        let settled = UserDefaults.standard.stringArray(forKey: notifiedDefaultsKey) ?? []
+        let suggestions = open.filter { $0.endSec - $0.startSec >= WorkoutAutoSave.minDurationS }
+            .map { WorkoutDetectedPolicy.Candidate(startTs: $0.startSec, endTs: $0.endSec, avgHr: $0.avgBpm,
+                                                   maxHr: $0.peakBpm, suggestedClass: $0.suggestedClass) }
         let decision = WorkoutDetectedPolicy.decide(
-            nowSec: now, candidates: candidates, realSpans: realSpans,
-            dismissedSpans: dismissed, settledSpans: settled)
-        guard let bout = decision.notify else { return }
+            nowSec: now, candidates: suggestions, realSpans: [], dismissedSpans: [],
+            settledSpans: WorkoutSource.parseDismissedSpans(settled))
+        guard !saved.isEmpty || decision.notify != nil else { return }
 
-        do {
+        let center = UNUserNotificationCenter.current()
+        var status = await center.notificationSettings().authorizationStatus
+        if status == .notDetermined {
+            _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+            status = await center.notificationSettings().authorizationStatus
+        }
+        guard status == .authorized || status == .provisional else { return }
+
+        for row in saved {
+            let c = WorkoutDetectedPolicy.Candidate(startTs: row.startTs, endTs: row.endTs, avgHr: row.avgHr,
+                                                    maxHr: row.maxHr, suggestedClass: row.suggestedClass)
             let content = UNMutableNotificationContent()
-            content.title = String(localized: "Activity detected")
-            // The metrics fragment ("47 min · avg 104 bpm") is locale-neutral unit notation the
-            // policy builds once for both platforms; only the sentence frame around it localizes,
-            // so the extractable key stays a single interpolation (dynamic strings can't be keys).
-            // When the classifier suggested a class, the localized name joins the frame — hedged
-            // ("looks like") because it is an advisory guess, never a measured fact.
+            content.title = String(localized: "Workout saved")
+            let sport = WorkoutSource.displaySport(row.sport)
+            let metrics = WorkoutDetectedPolicy.metricsText(c)
+            content.body = String(localized: "\(sport) · \(metrics). Detected from your strap — delete it if it was not a workout.")
+            await post(content, category: savedCategoryId, startTs: row.startTs, endTs: row.endTs)
+        }
+        if let bout = decision.notify {
+            let content = UNMutableNotificationContent()
+            content.title = String(localized: "Looks like a workout")
             let metrics = WorkoutDetectedPolicy.metricsText(bout)
             if let name = WorkoutSource.suggestedClassName(bout.suggestedClass) {
-                content.body = String(localized:
-                    "\(metrics) — looks like \(name). Saved to Workouts — tap to review.")
+                content.body = String(localized: "\(metrics) — looks like \(name). Save it?")
             } else {
-                content.body = String(localized:
-                    "\(metrics). Saved to Workouts — tap to review.")
+                content.body = String(localized: "\(metrics). Save it?")
             }
-            content.categoryIdentifier = categoryId
-            content.sound = .default
-            content.userInfo = [infoStartTs: bout.startTs, infoEndTs: bout.endTs]
+            if await post(content, category: suggestedCategoryId, startTs: bout.startTs, endTs: bout.endTs) {
+                // Mark settled only after a successful post: a failed delivery keeps its chance next pass.
+                var tokens = settled
+                for t in decision.settledTokens where !tokens.contains(t) { tokens.append(t) }
+                UserDefaults.standard.set(WorkoutDetectedPolicy.prunedTokens(tokens, nowSec: now),
+                                          forKey: notifiedDefaultsKey)
+            }
+        }
+        if TestCentre.active(.workouts), let workoutsLog = await repository.workoutsLog {
+            workoutsLog("workout notify saved=\(saved.count) suggested=\(decision.notify == nil ? 0 : 1) "
+                        + "settled=\(decision.settledTokens.count)")
+        }
+    }
+
+    @discardableResult
+    private static func post(_ content: UNMutableNotificationContent, category: String,
+                             startTs: Int, endTs: Int) async -> Bool {
+        content.categoryIdentifier = category
+        content.sound = .default
+        content.userInfo = [infoStartTs: startTs, infoEndTs: endTs]
+        do {
             try await UNUserNotificationCenter.current().add(
-                UNNotificationRequest(identifier: requestId(startTs: bout.startTs),
-                                      content: content, trigger: nil))
-            // Mark settled only after a successful post (StrainTarget idiom): a suppressed or
-            // denied delivery still gets its chance once notifications are usable again.
-            var tokens = UserDefaults.standard.stringArray(forKey: notifiedDefaultsKey) ?? []
-            for t in decision.settledTokens where !tokens.contains(t) { tokens.append(t) }
-            UserDefaults.standard.set(
-                WorkoutDetectedPolicy.prunedTokens(tokens, nowSec: now),
-                forKey: notifiedDefaultsKey)
-            if TestCentre.active(.workouts), let workoutsLog = await repository.workoutsLog {
-                workoutsLog(WorkoutsTrace.detectedNotifyLine(
-                    durMin: (bout.endTs - bout.startTs) / 60,
-                    settledCount: decision.settledTokens.count))
-            }
+                UNNotificationRequest(identifier: requestId(startTs: startTs), content: content, trigger: nil))
+            return true
         } catch {
-            // A failed post must not consume the tokens — the bout stays eligible so it can fire
-            // on the next pass instead of being lost silently.
+            return false
         }
     }
 }

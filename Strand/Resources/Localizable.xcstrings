@@ -207173,7 +207173,6 @@
       }
     },
     "Workout saved" : {
-      "extractionState" : "stale",
       "localizations" : {
         "de" : {
           "stringUnit" : {
@@ -268838,6 +268837,296 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "這是你記錄的日子中的關聯，不是原因。一種行為需要有和沒有它的日子；顯著性要求兩者至少各五天。p 值已針對同時檢驗多種行為進行校正。"
+          }
+        }
+      }
+    },
+    "%@ · %@. Detected from your strap — delete it if it was not a workout." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@. Von deinem Band erkannt – lösche es, wenn es kein Workout war."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@. Detectado por tu pulsera: elimínalo si no fue un entrenamiento."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@. Détecté par ton bracelet — supprime-le si ce n’était pas un entraînement."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@. Rilevato dal tuo bracciale — eliminalo se non era un allenamento."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@. Wykryto z opaski — usuń, jeśli to nie był trening."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@. Detetado pela tua pulseira — elimina-o se não foi um treino."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@. Определено браслетом — удалите, если это не была тренировка."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@。由手环检测——如果不是锻炼请删除。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · %2$@。由手環偵測——如果不是鍛鍊請刪除。"
+          }
+        }
+      }
+    },
+    "%@ — looks like %@. Save it?" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — vermutlich %2$@. Speichern?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — probablemente %2$@. ¿Guardarlo?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — probablement %2$@. L’enregistrer ?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — probabilmente %2$@. Salvarlo?"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — prawdopodobnie %2$@. Zapisać?"
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — provavelmente %2$@. Guardar?"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ — похоже на %2$@. Сохранить?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@——看起来像%2$@。保存吗？"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@——看起來像%2$@。要儲存嗎？"
+          }
+        }
+      }
+    },
+    "%@. Save it?" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@. Speichern?"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@. ¿Guardarlo?"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@. L’enregistrer ?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@. Salvarlo?"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@. Zapisać?"
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@. Guardar?"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@. Сохранить?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@。保存吗？"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@。要儲存嗎？"
+          }
+        }
+      }
+    },
+    "Detected workouts" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erkannte Workouts"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Entrenamientos detectados"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Entraînements détectés"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allenamenti rilevati"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wykryte treningi"
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Treinos detetados"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Распознанные тренировки"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检测到的锻炼"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偵測到的鍛鍊"
+          }
+        }
+      }
+    },
+    "Tells you when a workout from your strap is saved, so you can delete it if it was not one, and offers longer sessions it was less sure of. Workouts are saved either way." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Meldet, wenn ein Workout von deinem Band gespeichert wurde, damit du es löschen kannst, falls es keines war, und schlägt längere Einheiten vor, bei denen es unsicherer war. Workouts werden in jedem Fall gespeichert."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Te avisa cuando se guarda un entrenamiento de tu pulsera, para que puedas eliminarlo si no lo fue, y te propone sesiones más largas de las que estaba menos seguro. Los entrenamientos se guardan igualmente."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Te prévient quand un entraînement de ton bracelet est enregistré, pour que tu puisses le supprimer si ce n’en était pas un, et te propose les séances plus longues dont il était moins sûr. Les entraînements sont enregistrés dans tous les cas."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ti avvisa quando viene salvato un allenamento dal bracciale, così puoi eliminarlo se non lo era, e ti propone le sessioni più lunghe di cui era meno sicuro. Gli allenamenti vengono salvati comunque."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Powiadamia, gdy trening z opaski zostanie zapisany, aby można go było usunąć, jeśli nim nie był, i proponuje dłuższe sesje, co do których było mniej pewności. Treningi są zapisywane w każdym przypadku."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avisa quando um treino da tua pulseira é guardado, para o poderes eliminar se não o foi, e sugere sessões mais longas de que estava menos seguro. Os treinos são guardados de qualquer forma."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сообщает, когда тренировка с браслета сохранена, чтобы её можно было удалить, если это была не тренировка, и предлагает более длинные занятия, в которых уверенности меньше. Тренировки сохраняются в любом случае."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "手环的锻炼被保存时通知你，若不是锻炼可将其删除；也会推荐把握较低的较长时段。无论如何锻炼都会被保存。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "手環的鍛鍊被儲存時通知你，若不是鍛鍊可將其刪除；也會推薦把握較低的較長時段。無論如何鍛鍊都會被儲存。"
           }
         }
       }

@@ -24,7 +24,7 @@ final class DetectedWorkoutReconciliationTests: XCTestCase {
             RescoreBackgroundScheduler.lastPassSecondsKey, DayCycleMode.storageKey,
             PuffinExperiment.experimentalSleepV2Key, PuffinExperiment.motionAwareWakeKey,
             PuffinExperiment.autoDetectWorkoutsKey,
-            WorkoutSource.dismissedDefaultsKey,
+            WorkoutSource.dismissedDefaultsKey, Repository.autoSavedKey, "workouts.autoDetectDismissed",
             "testcentre.active.workouts", "testcentre.active.master",
         ]
         let saved = keys.map { ($0, defaults.object(forKey: $0)) }
@@ -68,6 +68,59 @@ final class DetectedWorkoutReconciliationTests: XCTestCase {
         XCTAssertEqual(open(auto: ["3000:3900"], legacy: ["990:1910"]), [], "either store keeps a candidate away")
         XCTAssertEqual(open(saved: [SavedWorkoutSpan(startSec: 2_900, endSec: 3_100)]), [older], "saved rows exclude overlaps")
         XCTAssertEqual(open(now: 3_900 + 60), [older], "a session that may still be mid-rest waits")
+    }
+
+    // MARK: - Auto-save (2026-11-18)
+
+    private func detection(_ start: Int, _ end: Int, save: Bool = true) -> Repository.WorkoutDetection {
+        Repository.WorkoutDetection(
+            workout: DetectedWorkout(startSec: start, endSec: end, avgBpm: 118, peakBpm: 150,
+                                     durationMin: (end - start) / 60, suggestedClass: "strength",
+                                     suggestedClassConfidence: 0.3),
+            autoSaveToken: save ? "strength" : nil)
+    }
+
+    func testAutoSaveSelectionHonoursEverythingThatSaysNo() {
+        let lift = detection(10_000, 13_000)
+        let now = 100_000
+        func due(_ d: [Repository.WorkoutDetection] = [], saved: [SavedWorkoutSpan] = [], blocked: [String] = [],
+                 now: Int = 100_000) -> [Int] {
+            Repository.selectAutoSaves(d.isEmpty ? [lift] : d, savedSpans: saved, blockedTokens: blocked, now: now)
+                .map(\.workout.startSec)
+        }
+        XCTAssertEqual(due(), [10_000])
+        XCTAssertEqual(due([detection(10_000, 13_000, save: false)]), [], "under the bar it stays a suggestion")
+        XCTAssertEqual(due(now: 13_000 + 60), [], "a session that may still grow waits")
+        XCTAssertEqual(due(saved: [SavedWorkoutSpan(startSec: 12_000, endSec: 14_000)]), [],
+                       "an overlapping saved row of any source wins")
+        XCTAssertEqual(due(blocked: ["12500:12600"]), [],
+                       "a dismissal or an earlier auto-save of an overlapping span blocks it")
+        XCTAssertEqual(due([lift, detection(12_900, 14_000), detection(20_000, 23_000)]), [10_000, 20_000],
+                       "two detections of one span save once")
+        _ = now
+    }
+
+    /// Delete on the notification removes the row the pass saved and keeps it from coming back as a
+    /// suggestion; a manual row the wearer typed (no class on it) is never touched.
+    func testDeletingAnAutoSavedWorkoutDismissesItsSpan() async throws {
+        try await withPreferences {
+            let store = try await WhoopStore.inMemory()
+            let start = Int(Date().timeIntervalSince1970) - 6 * 3_600
+            let auto = try XCTUnwrap(WorkoutSource.buildRow(fromSuggestion: detection(start, start + 2_700).workout))
+            let typed = WorkoutRow(startTs: start + 3_000, endTs: start + 4_000, sport: "Running", source: "manual",
+                                   durationS: 1_000, energyKcal: nil, avgHr: nil, maxHr: nil, strain: nil,
+                                   distanceM: nil, zonesJSON: nil, notes: nil, steps: nil)
+            _ = try await store.upsertWorkouts([auto, typed], deviceId: deviceId)
+            let repo = Repository(deviceId: deviceId)
+            repo.setStoreForTesting(store)
+
+            await repo.deleteAutoSavedWorkout(startTs: start, endTs: start + 4_000)
+
+            let rows = try await store.workouts(deviceId: deviceId, from: start - 1, to: start + 86_400, limit: 100)
+            XCTAssertEqual(rows.map(\.sport), ["Running"])
+            XCTAssertEqual(UserDefaults.standard.stringArray(forKey: "workouts.autoDetectDismissed"),
+                           ["\(start):\(start + 4_000)"])
+        }
     }
 
     func testConfirmedSuggestionStoresExactSecondsAndComputedFigures() throws {

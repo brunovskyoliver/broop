@@ -14,6 +14,7 @@ struct BroopAccountNotificationsPage: View {
     @EnvironmentObject private var behavior: BehaviorStore
     @AppStorage("notif.masterEnabled") private var wristAlertsMaster = false
     @AppStorage(SyncStallPolicy.enabledKey) private var syncStallReminderEnabled = true
+    @AppStorage(WorkoutDetectedNotifier.enabledDefaultsKey) private var workoutDetectedNotify = true
 
     var body: some View {
         BroopAccountPage(spacing: 30) {
@@ -43,6 +44,9 @@ struct BroopAccountNotificationsPage: View {
                     BroopAccountToggle(title: String(localized: "Above strain target"),
                                        detail: String(localized: "A heads-up when your Effort passes the top of today's target range, so you can ease off. At most once per day."),
                                        isOn: $behavior.strainTargetUpperNudge)
+                    BroopAccountToggle(title: String(localized: "Detected workouts"),
+                                       detail: String(localized: "Tells you when a workout from your strap is saved, so you can delete it if it was not one, and offers longer sessions it was less sure of. Workouts are saved either way."),
+                                       isOn: $workoutDetectedNotify)
                     BroopAccountToggle(title: String(localized: "Early-illness signs"),
                                        detail: String(localized: "Needs at least 14 days of history. When two or more signals drift together you get a banner on the dashboard and a notification, at most once a day."),
                                        isOn: $behavior.illnessWatch)
@@ -64,6 +68,7 @@ struct BroopAccountNotificationsPage: View {
             SyncStallReminder.shared.refresh()
         }
         .onChange(of: behavior.batteryAlerts) { _, on in if on { BatteryNotifier.requestAuthorization() } }
+        .onChange(of: workoutDetectedNotify) { _, on in if on { WorkoutDetectedNotifier.requestAuthorization() } }
         .onChange(of: behavior.strainTargetNudge) { _, on in
             if on {
                 StrainTargetNotifier.requestAuthorization()

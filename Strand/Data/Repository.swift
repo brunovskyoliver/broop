@@ -3325,11 +3325,11 @@ final class Repository: ObservableObject {
     }
 
     /// Hard cap on the dismissed-span list , a backstop so the UserDefaults array can't grow without
-    /// bound even in pathological use. 200 most-recent (by span END) is far more than detection's ~2-day
+    /// bound even in pathological use. 200 most-recent (by span END) is far more than detection's 7-day
     /// window can ever re-surface; the age prune below normally keeps it much shorter. Mirrors Android.
     private static let autoDetectDismissedMax = 200
     /// Spans whose END is older than this many seconds can never be re-suggested (detection only scans
-    /// the last ~2 days), so we drop them. 30 days, matching the Android twin byte-for-byte.
+    /// the last 7 days), so we drop them. 30 days, matching the Android twin byte-for-byte.
     private static let autoDetectDismissedMaxAgeSec = 30 * 86_400
 
     /// Parse the END time (seconds) out of a "startSec:endSec" token; nil if malformed.
@@ -3358,88 +3358,247 @@ final class Repository: ObservableObject {
         return fresh.indices.filter { keepIdx.contains($0) }.map { fresh[$0] }
     }
 
-    /// Run `WorkoutDetector` over the last `daysBack` days and return every open suggestion, newest first.
-    /// Empty when the toggle is off or nothing is found. PURE READ: never writes a workout.
-    func autoDetectCandidates(daysBack: Int = 2) async -> [DetectedWorkout] {
+    /// One session `WorkoutDetector` found, with the `WorkoutAutoSave` verdict on it.
+    struct WorkoutDetection: Equatable, Sendable {
+        let workout: DetectedWorkout
+        /// The class token the session is saved under when it clears the auto-save bar, else nil.
+        let autoSaveToken: String?
+    }
+
+    /// Per-day detection results, keyed by the day chunk's start, valid while the chunk's inputs are the
+    /// same. The card and every analysis pass re-read up to a week; only a day whose streams changed is
+    /// detected again.
+    private var detectionCache: [Int: (key: String, found: [WorkoutDetection])] = [:]
+
+    /// Hours past midnight each day's chunk also reads, so a session that crosses midnight is detected
+    /// whole in the day it started rather than cut in two the way daily scoring cuts it.
+    nonisolated static let detectionTailS = 6 * 3_600
+
+    /// 2026-11-18: every session `WorkoutDetector` finds in the last `daysBack` days, oldest first, one
+    /// local day at a time. Day by day because the stream reads are capped (`hrSamples` keeps the OLDEST
+    /// rows past its limit, so one week-long read would silently drop the newest days), and because that
+    /// is the shape WorkoutBench replays, so the bar it measured is the bar the app applies. Each day uses
+    /// its own resting HR. PURE READ.
+    func detectWorkouts(daysBack: Int, now: Int = Int(Date().timeIntervalSince1970)) async -> [WorkoutDetection] {
         guard PuffinExperiment.autoDetectWorkoutsEnabled else { return [] }
-        let now = Int(Date().timeIntervalSince1970)
+        let cal = Calendar.current
         let from = now - daysBack * 86_400
-        let samples = await hrSamples(from: from, to: now, limit: 200_000)
-        guard samples.count >= 2 else { return [] }
-        let hr = samples.map { (ts: $0.ts, bpm: $0.bpm) }
-
-        // Resting HR: most recent nightly RHR in range, else the detector's own derivation.
-        let restingBpm = days.last(where: { $0.restingHr != nil })?.restingHr
-
-        // Exclude every already-saved workout window (any source , strap, manual, imported, detected).
-        let saved = await workoutRows()
-        let savedSpans = saved.map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
-
-        let gravity = await gravitySamplesUnion(from: from, to: now)
         let maxHR = strainProfile.map(\.hrMax).flatMap { $0 > 0 ? $0 : nil }
-        // One strap's steps, as `strapStepTicks` reads them: two cumulative counters must not interleave.
-        var steps: [StepSample] = []
-        if let store = await ensureStore() {
-            for id in importedReadIds where steps.isEmpty {
-                steps = (try? await store.stepSamples(deviceId: id, from: from, to: now, limit: 200_000)) ?? []
-            }
-        }
-
-        // Workouts & GPS test mode: the old detector's trace and shadow comparison, as diagnostics only.
-        if TestCentre.active(.workouts), workoutsLog != nil {
-            let motion = AutoWorkoutDetector.motionPoints(gravity)
-            let (_, trace) = AutoWorkoutDetector.detectTrace(
-                hr: hr, restingBpm: restingBpm, motion: motion, savedSpans: savedSpans,
-                maxHR: maxHR.map { Int($0.rounded()) }, minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin,
-                path: "autoDetect")
-            for line in trace { emitWorkouts(line) }
-            let labelledSpans = saved
-                // `workoutRows()` intentionally returns long-lived history for the UI. Shadow candidates
-                // only cover this detector scan, so count labels in that same [from, now] start-time window
-                // (matching Android's range-scoped queries) or old sessions become false "missed" results.
-                .filter {
-                    $0.startTs >= from && $0.startTs <= now
-                        && WorkoutSource.classify($0.source) != .detected
-                }
-                .map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
-            for line in AutoWorkoutDetector.shadowComparisonLines(
-                hr: hr, restingBpm: restingBpm, motion: nil, savedSpans: labelledSpans) {
-                emitWorkouts(line)
-            }
-        }
-
         await refreshEnergyAnchors()
         let profile = strainProfile?.user.map(withEnergyAnchors)
         let method = PuffinExperiment.effortMethod
-        let candidates = await Task.detached(priority: .utility) {
-            WorkoutDetector.detect(hr: samples, gravity: gravity, restingHR: restingBpm.map(Double.init), maxHR: maxHR,
-                                   age: profile.flatMap { $0.age > 0 ? $0.age : nil }, profile: profile,
-                                   effortMethod: method, steps: steps)
-                .map { found in
-                    // The same advisory classifier the daily pass runs, over this session's own slice of
-                    // the streams. One row of lead-in gravity keeps the first in-window delta honest.
-                    var session = found
-                    if let features = WorkoutTypeFeatureExtractor.extract(
-                        hr: samples.filter { $0.ts >= session.start && $0.ts <= session.end },
-                        gravity: gravity.filter { $0.ts >= session.start - 2 && $0.ts <= session.end },
-                        steps: steps.filter { $0.ts >= session.start && $0.ts <= session.end },
-                        start: session.start, end: session.end,
-                        restingHR: restingBpm.map(Double.init), maxHR: session.hrmax,
-                        caloriesKcal: session.caloriesKcal) {
-                        let prediction = WorkoutTypeClassifier.classify(features)
-                        session.suggestedClass = prediction.predictedClass == .other
-                            ? nil : prediction.predictedClass.rawValue
-                        session.suggestedClassConfidence = prediction.confidence
-                    }
-                    let ticks = StepsCounter.stepsInWindow(steps.filter { $0.ts >= session.start && $0.ts <= session.end })
-                    let count = ticks.map { Int((Double($0) / max(profile?.stepTicksPerStep ?? 1, 0.5)).rounded()) }
-                    return DetectedWorkout(session: session, steps: count.flatMap { $0 > 0 ? $0 : nil })
+        let dayKey = DateFormatter()
+        dayKey.calendar = cal; dayKey.locale = Locale(identifier: "en_US_POSIX"); dayKey.dateFormat = "yyyy-MM-dd"
+
+        var kept: [WorkoutDetection] = []
+        var dayStart = Int(cal.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(from))).timeIntervalSince1970)
+        while dayStart <= now {
+            let dayDate = Date(timeIntervalSince1970: TimeInterval(dayStart))
+            let nextDay = Int((cal.date(byAdding: .day, value: 1, to: dayDate) ?? dayDate.addingTimeInterval(86_400))
+                .timeIntervalSince1970)
+            defer { dayStart = nextDay }
+            let to = min(now, nextDay + Self.detectionTailS)
+            let samples = await hrSamples(from: dayStart, to: to, limit: 200_000)
+            guard samples.count >= 2 else { continue }
+            let gravity = await gravitySamplesUnion(from: dayStart, to: to)
+            // One strap's steps, as `strapStepTicks` reads them: two cumulative counters must not interleave.
+            var steps: [StepSample] = []
+            if let store = await ensureStore() {
+                for id in importedReadIds where steps.isEmpty {
+                    steps = (try? await store.stepSamples(deviceId: id, from: dayStart, to: to, limit: 200_000)) ?? []
                 }
-        }.value
+            }
+            // The day's own resting HR, else the latest one before it, else the detector's own derivation.
+            let key = dayKey.string(from: dayDate)
+            let restingBpm = days.last(where: { $0.day <= key && $0.restingHr != nil })?.restingHr
+            let cacheKey = "\(to - dayStart):\(samples.count):\(samples.last?.ts ?? 0):\(gravity.count):\(steps.count):"
+                + "\(restingBpm ?? -1):\(maxHR ?? -1):\(profile?.cacheKey ?? "-"):\(method)"
+            let found: [WorkoutDetection]
+            if let hit = detectionCache[dayStart], hit.key == cacheKey {
+                found = hit.found
+            } else {
+                found = await Task.detached(priority: .utility) {
+                    WorkoutDetector.detect(hr: samples, gravity: gravity, restingHR: restingBpm.map(Double.init),
+                                           maxHR: maxHR, age: profile.flatMap { $0.age > 0 ? $0.age : nil },
+                                           profile: profile, effortMethod: method, steps: steps)
+                        .filter { $0.start >= dayStart && $0.start < nextDay }
+                        .map { found in
+                            var session = found
+                            let (features, prediction) = WorkoutAutoSave.classify(
+                                session, hr: samples, gravity: gravity, steps: steps,
+                                restingHR: restingBpm.map(Double.init))
+                            if let prediction {
+                                session.suggestedClass = prediction.predictedClass == .other
+                                    ? nil : prediction.predictedClass.rawValue
+                                session.suggestedClassConfidence = prediction.confidence
+                            }
+                            var token: String? = nil
+                            if case .save(let t) = WorkoutAutoSave.verdict(session: session, features: features,
+                                                                           prediction: prediction) { token = t }
+                            let ticks = StepsCounter.stepsInWindow(steps.filter { $0.ts >= session.start && $0.ts <= session.end })
+                            let count = ticks.map { Int((Double($0) / max(profile?.stepTicksPerStep ?? 1, 0.5)).rounded()) }
+                            return WorkoutDetection(workout: DetectedWorkout(session: session, steps: count.flatMap { $0 > 0 ? $0 : nil }),
+                                                    autoSaveToken: token)
+                        }
+                }.value
+                detectionCache[dayStart] = (cacheKey, found)
+            }
+            // A session the previous day's chunk saw whole (it crossed midnight) is not counted twice.
+            for d in found where !kept.contains(where: { $0.workout.startSec < d.workout.endSec && d.workout.startSec < $0.workout.endSec }) {
+                kept.append(d)
+            }
+        }
+        detectionCache = detectionCache.filter { $0.key >= from - 86_400 }
+        return kept
+    }
+
+    /// Run detection over the last `daysBack` days and return every open suggestion, newest first: not
+    /// saved, not dismissed, not auto-saved before (the ledger), and settled. Empty when the toggle is off
+    /// or nothing is found. PURE READ: never writes a workout. A session that clears the auto-save bar is
+    /// still offered here until a pass saves it, so the card never loses one in between.
+    func autoDetectCandidates(daysBack: Int = WorkoutDetectedNotifier.suggestionLifetimeDays) async -> [DetectedWorkout] {
+        guard PuffinExperiment.autoDetectWorkoutsEnabled else { return [] }
+        let now = Int(Date().timeIntervalSince1970)
+        await logAutoDetectShadow(daysBack: min(daysBack, 2), now: now)
+        let detections = await detectWorkouts(daysBack: daysBack, now: now)
+        let saved = await workoutRows()
         return Self.selectAutoDetectCandidates(
-            candidates, savedSpans: savedSpans,
-            autoDismissedTokens: autoDetectDismissedSpans,
+            detections.map(\.workout), savedSpans: saved.map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) },
+            autoDismissedTokens: autoDetectDismissedSpans + autoSavedSpans,
             detectedDismissedTokens: dismissedDetectedSpans, now: now)
+    }
+
+    /// Workouts & GPS test mode: the old detector's trace and shadow comparison, as diagnostics only.
+    private func logAutoDetectShadow(daysBack: Int, now: Int) async {
+        guard TestCentre.active(.workouts), workoutsLog != nil else { return }
+        let from = now - daysBack * 86_400
+        let samples = await hrSamples(from: from, to: now, limit: 200_000)
+        guard samples.count >= 2 else { return }
+        let hr = samples.map { (ts: $0.ts, bpm: $0.bpm) }
+        let restingBpm = days.last(where: { $0.restingHr != nil })?.restingHr
+        let saved = await workoutRows()
+        let savedSpans = saved.map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
+        let gravity = await gravitySamplesUnion(from: from, to: now)
+        let maxHR = strainProfile.map(\.hrMax).flatMap { $0 > 0 ? $0 : nil }
+        let motion = AutoWorkoutDetector.motionPoints(gravity)
+        let (_, trace) = AutoWorkoutDetector.detectTrace(
+            hr: hr, restingBpm: restingBpm, motion: motion, savedSpans: savedSpans,
+            maxHR: maxHR.map { Int($0.rounded()) }, minimumSustainedMinutes: AutoWorkoutDetector.minSustainedMin,
+            path: "autoDetect")
+        for line in trace { emitWorkouts(line) }
+        let labelledSpans = saved
+            // `workoutRows()` intentionally returns long-lived history for the UI. Shadow candidates
+            // only cover this detector scan, so count labels in that same [from, now] start-time window
+            // (matching Android's range-scoped queries) or old sessions become false "missed" results.
+            .filter {
+                $0.startTs >= from && $0.startTs <= now
+                    && WorkoutSource.classify($0.source) != .detected
+            }
+            .map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) }
+        for line in AutoWorkoutDetector.shadowComparisonLines(
+            hr: hr, restingBpm: restingBpm, motion: nil, savedSpans: labelledSpans) {
+            emitWorkouts(line)
+        }
+    }
+
+    // MARK: - Auto-save (2026-11-18)
+    //
+    // A session that clears `WorkoutAutoSave` is saved as a manual row without asking, under the class it
+    // was saved as (its `suggestedClass` stays on the row, which marks it as the detector's own). Every
+    // span saved this way goes into a ledger, so a row the wearer later deletes, from anywhere, is never
+    // saved or suggested again.
+
+    /// Spans ("startSec:endSec") this device ever auto-saved. Pruned like the dismissal list.
+    nonisolated static let autoSavedKey = "workouts.autoSaved"
+    private var autoSavedSpans: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Self.autoSavedKey) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: Self.autoSavedKey) }
+    }
+
+    /// The detections a pass should save now: cleared the bar, settled (may no longer grow), and
+    /// overlapping no saved row of any source, no dismissal in either store and no earlier auto-save.
+    /// Oldest first, so the saves land in the order they happened.
+    nonisolated static func selectAutoSaves(
+        _ detections: [WorkoutDetection], savedSpans: [SavedWorkoutSpan], blockedTokens: [String], now: Int
+    ) -> [WorkoutDetection] {
+        let blocked = WorkoutSource.parseDismissedSpans(blockedTokens)
+        var out: [WorkoutDetection] = []
+        for d in detections.sorted(by: { $0.workout.startSec < $1.workout.startSec }) {
+            let w = d.workout
+            guard d.autoSaveToken != nil, w.endSec <= now - WorkoutDetector.stitchMaxGapS,
+                  !blocked.contains(where: { w.startSec < $0.end && $0.start < w.endSec }),
+                  !savedSpans.contains(where: { w.startSec < $0.endSec && $0.startSec < w.endSec }),
+                  !out.contains(where: { w.startSec < $0.workout.endSec && $0.workout.startSec < w.endSec })
+            else { continue }
+            out.append(d)
+        }
+        return out
+    }
+
+    /// One analysis pass of auto-detection: save every confident session that is due (see
+    /// `selectAutoSaves`), then return what was saved and the suggestions still open, newest first.
+    func runWorkoutAutoSave(daysBack: Int = 2) async -> (saved: [WorkoutRow], open: [DetectedWorkout]) {
+        guard PuffinExperiment.autoDetectWorkoutsEnabled else { return ([], []) }
+        let now = Int(Date().timeIntervalSince1970)
+        let detections = await detectWorkouts(daysBack: daysBack, now: now)
+        guard !detections.isEmpty else { return ([], []) }
+        var savedRows = await workoutRows()
+        let due = Self.selectAutoSaves(
+            detections, savedSpans: savedRows.map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) },
+            blockedTokens: autoDetectDismissedSpans + dismissedDetectedSpans + autoSavedSpans, now: now)
+        var saved: [WorkoutRow] = []
+        for d in due {
+            let w = d.workout
+            let tagged = DetectedWorkout(startSec: w.startSec, endSec: w.endSec, avgBpm: w.avgBpm, peakBpm: w.peakBpm,
+                                         durationMin: w.durationMin, energyKcal: w.energyKcal, strain: w.strain,
+                                         zonesJSON: w.zonesJSON, steps: w.steps, suggestedClass: d.autoSaveToken,
+                                         suggestedClassConfidence: w.suggestedClassConfidence)
+            guard let row = WorkoutSource.buildRow(fromSuggestion: tagged) else { continue }
+            // The ledger first: if the write fails, the span is still never saved twice by a later pass.
+            var ledger = autoSavedSpans
+            ledger.append("\(w.startSec):\(w.endSec)")
+            autoSavedSpans = prunedAutoDetectSpans(ledger, now: now)
+            await saveManualWorkout(row)
+            saved.append(row)
+            savedRows.append(row)
+            if TestCentre.active(.workouts) {
+                emitWorkouts("workout autosave start=\(w.startSec) dur=\(w.durationMin)m class=\(d.autoSaveToken ?? "-") "
+                             + "avg=\(w.avgBpm) peak=\(w.peakBpm)")
+            }
+        }
+        let open = Self.selectAutoDetectCandidates(
+            detections.map(\.workout), savedSpans: savedRows.map { SavedWorkoutSpan(startSec: $0.startTs, endSec: $0.endTs) },
+            autoDismissedTokens: autoDetectDismissedSpans + autoSavedSpans,
+            detectedDismissedTokens: dismissedDetectedSpans, now: now)
+        return (saved, open)
+    }
+
+    /// The notification's Save action: re-resolve the suggestion by its span (the notification carries
+    /// only the span) and save it as the card's Save would.
+    @discardableResult
+    func saveDetectedSuggestion(startTs: Int, endTs: Int) async -> Bool {
+        guard let w = await autoDetectCandidates().first(where: { $0.startSec < endTs && startTs < $0.endSec })
+        else { return false }
+        return await saveDetectedWorkout(w)
+    }
+
+    /// The notification's "Not a workout" action on a suggestion: the card's dismissal, by span.
+    func dismissDetectedSuggestion(startTs: Int, endTs: Int) {
+        dismissDetectedSuggestion(DetectedWorkout(startSec: startTs, endSec: endTs, avgBpm: 0, peakBpm: 0,
+                                                  durationMin: (endTs - startTs) / 60))
+    }
+
+    /// The notification's Delete action on an auto-saved workout: delete the row the pass saved (a manual
+    /// row still carrying its class, overlapping the span) and dismiss the span, so it comes back neither
+    /// as a workout nor as a suggestion. A row the wearer has since edited no longer carries the class and
+    /// is left alone: their edit says it is a workout.
+    func deleteAutoSavedWorkout(startTs: Int, endTs: Int) async {
+        let rows = await workoutRows(from: startTs - 86_400, to: endTs + 86_400)
+        for r in rows where WorkoutSource.classify(r.source) == .manual && r.suggestedClass != nil
+            && r.startTs < endTs && startTs < r.endTs {
+            await deleteWorkout(r)
+        }
+        dismissDetectedSuggestion(startTs: startTs, endTs: endTs)
     }
 
     /// SAVE a suggested window as a manual row with the exact seconds and everything the detector
