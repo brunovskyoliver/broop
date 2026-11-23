@@ -300,9 +300,16 @@ public final class ReadonlyNoopStore {
         guard hasHr || hasPpg else { return nil }
 
         return try dbQueue.read { db in
+            // Hours older than six hours may be sealed into `rawChunk` (stream 1 is heart rate), whose
+            // `maxTs` is the newest second in each chunk.
+            let sealed = tableNames.contains("rawChunk")
+                ? try Int.fetchOne(db, sql: "SELECT MAX(maxTs) FROM rawChunk WHERE stream = 1 AND deviceId = ?",
+                                   arguments: [deviceId])
+                : nil
+            let hot: Int?
             switch (hasHr, hasPpg) {
             case (true, true):
-                return try Int.fetchOne(db, sql: """
+                hot = try Int.fetchOne(db, sql: """
                     SELECT MAX(ts) FROM (
                         SELECT ts FROM hrSample WHERE deviceId = ?
                         UNION ALL
@@ -310,12 +317,13 @@ public final class ReadonlyNoopStore {
                     )
                     """, arguments: [deviceId, deviceId])
             case (true, false):
-                return try Int.fetchOne(db, sql: "SELECT MAX(ts) FROM hrSample WHERE deviceId = ?", arguments: [deviceId])
+                hot = try Int.fetchOne(db, sql: "SELECT MAX(ts) FROM hrSample WHERE deviceId = ?", arguments: [deviceId])
             case (false, true):
-                return try Int.fetchOne(db, sql: "SELECT MAX(ts) FROM ppgHrSample WHERE deviceId = ?", arguments: [deviceId])
+                hot = try Int.fetchOne(db, sql: "SELECT MAX(ts) FROM ppgHrSample WHERE deviceId = ?", arguments: [deviceId])
             case (false, false):
-                return nil
+                hot = nil
             }
+            return [hot, sealed].compactMap { $0 }.max()
         }
     }
 
@@ -350,6 +358,10 @@ public final class ReadonlyNoopStore {
             var decodedRows = 0
             for table in decodedTables where tableNames.contains(table) {
                 decodedRows += try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") ?? 0
+            }
+            // Rows sealed into the cold tier (v52-raw-chunk), all from tables in the list above.
+            if tableNames.contains("rawChunk") {
+                decodedRows += try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(n), 0) FROM rawChunk") ?? 0
             }
             let rawBatches = tableNames.contains("rawBatch")
                 ? (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM rawBatch") ?? 0)

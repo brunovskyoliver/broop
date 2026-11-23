@@ -1196,6 +1196,11 @@ extension WhoopStore {
                 t.primaryKey(["deviceId", "ts", "sequence"])
             }
         }
+        // Cold tier for the seven dense raw streams: one compressed chunk per (stream, device, hour), plus
+        // a guard on each hot table that refuses a row for an hour already sealed. See `RawColdTier`.
+        migrator.registerMigration("v52-raw-chunk") { db in
+            try RawColdTier.createSchema(db)
+        }
         return migrator
     }
 }

@@ -55,9 +55,10 @@ extension WhoopStore {
     public func firstScorableWhoop5RRTimestamp(deviceId: String) async throws -> Int? {
         try syncRead { db in
             try Int.fetchOne(db, sql: """
-                SELECT MIN(ts) FROM rrInterval
+                SELECT ts FROM \(RawStream.rr.union)
                 WHERE deviceId = ? AND srcChannel IN \(Self.scorableWhoop5Channels)
                 AND (tsSuspect IS NULL OR tsSuspect <> 1)
+                ORDER BY ts LIMIT 1
                 """, arguments: [deviceId])
         }
     }
@@ -70,8 +71,9 @@ extension WhoopStore {
     public func firstRecordedRRTimestamp(deviceId: String) async throws -> Int? {
         try syncRead { db in
             try Int.fetchOne(db, sql: """
-                SELECT MIN(ts) FROM rrInterval
+                SELECT ts FROM \(RawStream.rr.union)
                 WHERE deviceId = ? AND (tsSuspect IS NULL OR tsSuspect <> 1)
+                ORDER BY ts LIMIT 1
                 """, arguments: [deviceId])
         }
     }
@@ -89,11 +91,11 @@ extension WhoopStore {
             }
             return try Bool.fetchOne(db, sql: """
                 SELECT
-                  EXISTS(SELECT 1 FROM rrInterval
+                  EXISTS(SELECT 1 FROM \(RawStream.rr.union)
                          WHERE deviceId = :d AND ts >= :f AND ts <= :t
                            AND srcChannel IS NULL
                            AND (tsSuspect IS NULL OR tsSuspect <> 1))
-                  AND NOT EXISTS(SELECT 1 FROM rrInterval
+                  AND NOT EXISTS(SELECT 1 FROM \(RawStream.rr.union)
                          WHERE deviceId = :d AND ts >= :f AND ts <= :t
                            AND srcChannel IN \(Self.scorableWhoop5Channels)
                            AND (tsSuspect IS NULL OR tsSuspect <> 1))
@@ -119,7 +121,7 @@ extension WhoopStore {
         var tagged = false
         if knownFamily == nil && !nonWhoop {
             tagged = try Bool.fetchOne(db, sql: """
-                SELECT EXISTS(SELECT 1 FROM rrInterval WHERE deviceId = ? AND srcChannel IN (5, 6, 7))
+                SELECT EXISTS(SELECT 1 FROM \(RawStream.rr.union) WHERE deviceId = ? AND srcChannel IN (5, 6, 7))
                 """, arguments: [deviceId]) ?? false
             // Re-pairing can leave legacy rows under the canonical alias while callers still hold
             // that old ID. Resolve its active strap here so sleep edits and ordinary reads agree.

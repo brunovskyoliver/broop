@@ -235,6 +235,16 @@ extension WhoopStore {
         let result: (Int, Int, Int, Int, Int, Int, Int, Int) = try syncWrite { db in
             var hr = 0, rr = 0, ev = 0, bat = 0
             var spo2 = 0, skin = 0, resp = 0, grav = 0
+            // Hours this batch writes into that are already sealed come back to the hot tables first, so
+            // every statement below meets exactly the rows it met before sealing (conflicts, promotes and
+            // the fill rule's same-second heart rate). The next seal pass packs them again.
+            try RawColdTier.unseal(db, stream: .hr, deviceId: deviceId, timestamps: streams.hr.map(\.ts))
+            try RawColdTier.unseal(db, stream: .rr, deviceId: deviceId, timestamps: streams.rr.map(\.ts))
+            try RawColdTier.unseal(db, stream: .gravity, deviceId: deviceId, timestamps: streams.gravity.map(\.ts))
+            try RawColdTier.unseal(db, stream: .skinTemp, deviceId: deviceId, timestamps: streams.skinTemp.map(\.ts))
+            try RawColdTier.unseal(db, stream: .steps, deviceId: deviceId, timestamps: streams.steps.map(\.ts))
+            try RawColdTier.unseal(db, stream: .sleepState, deviceId: deviceId, timestamps: streams.sleepState.map(\.ts))
+            try RawColdTier.unseal(db, stream: .v18Aux, deviceId: deviceId, timestamps: streams.v18Aux.map(\.ts))
             // Reuse one prepared statement per table instead of recompiling the same SQL on every
             // row. This is the hottest write path (every Collector.flush + every Backfiller chunk
             // over potentially millions of historical rows). cachedStatement persists the compiled
@@ -325,6 +335,10 @@ extension WhoopStore {
                     $0.rrMs == 500 && ($0.srcChannel == .whoop5Historical || $0.srcChannel == .whoop5Standard)
                 }.map(\.ts)
                 if let fromTs = fillTs.min(), let toTs = fillTs.max() {
+                    // The rule reads and flags every row in [fromTs, toTs], not only this batch's.
+                    for stream in [RawStream.rr, .hr] {
+                        try RawColdTier.unseal(db, stream: stream, deviceId: deviceId, range: (fromTs / 3600 * 3600)...toTs)
+                    }
                     try db.execute(sql: WhoopStore.whoop5RrFillFlagSQL,
                                    arguments: ["deviceId": deviceId, "fromTs": fromTs, "toTs": toTs])
                 }
@@ -517,11 +531,17 @@ extension WhoopStore {
             // unspent instead means the next batch simply retries the sweep.
             if banked >= v18AuxPruneEveryRows,
                (try? syncWrite { db in
-                   try db.execute(sql: """
-                       DELETE FROM v18AuxSample WHERE deviceId = ? AND ts < (
-                           SELECT MIN(ts) FROM (
-                               SELECT ts FROM v18AuxSample WHERE deviceId = ? ORDER BY ts DESC LIMIT ?))
-                       """, arguments: [deviceId, deviceId, v18AuxRetentionRows])
+                   // The Nth-newest row is found across both tiers. Sealed hours wholly below it go as
+                   // chunks; the one that straddles it comes back hot first, so the row delete is exact.
+                   guard let cutoff = try Int.fetchOne(db, sql: """
+                       SELECT MIN(ts) FROM (
+                           SELECT ts FROM \(RawStream.v18Aux.union) WHERE deviceId = ? ORDER BY ts DESC LIMIT ?)
+                       """, arguments: [deviceId, v18AuxRetentionRows]) else { return }
+                   try RawColdTier.deleteChunks(db, stream: .v18Aux, predicate: "deviceId = ? AND hourStart + 3600 <= ?",
+                                                arguments: [deviceId, cutoff])
+                   try RawColdTier.unseal(db, stream: .v18Aux, deviceId: deviceId, range: (cutoff / 3600 * 3600)...(cutoff / 3600 * 3600))
+                   try db.execute(sql: "DELETE FROM v18AuxSample WHERE deviceId = ? AND ts < ?",
+                                  arguments: [deviceId, cutoff])
                }) != nil {
                 v18AuxRowsSincePrune[deviceId] = 0
             }
@@ -596,7 +616,7 @@ extension WhoopStore {
 
             // hr: stream=hr → hr_bpm (col 3).
             for r in try Row.fetchAll(db, sql:
-                "SELECT ts, bpm FROM hrSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
+                "SELECT ts, bpm FROM \(RawStream.hr.union) AS hrSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
                 arguments: [deviceId, floor]) {
                 var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "hr"
                 row.cols[1] = WhoopStore.intStr(r["bpm"])
@@ -612,7 +632,7 @@ extension WhoopStore {
             // half the stored rows would make the duplication that motivated v32 un-diagnosable from an
             // export — which is exactly how it WAS diagnosed.
             for r in try Row.fetchAll(db, sql:
-                "SELECT ts, rrMs FROM rrInterval WHERE deviceId = ? AND ts >= ? " +
+                "SELECT ts, rrMs FROM \(RawStream.rr.union) AS rrInterval WHERE deviceId = ? AND ts >= ? " +
                 "ORDER BY ts, ord, rrMs, seq",
                 arguments: [deviceId, floor]) {
                 var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "rr"
@@ -621,7 +641,7 @@ extension WhoopStore {
             }
             // gravity: stream=gravity → grav_x/y/z (cols 5–7).
             for r in try Row.fetchAll(db, sql:
-                "SELECT ts, x, y, z FROM gravitySample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
+                "SELECT ts, x, y, z FROM \(RawStream.gravity.union) AS gravitySample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
                 arguments: [deviceId, floor]) {
                 var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "gravity"
                 row.cols[3] = WhoopStore.dblStr(r["x"])
@@ -631,7 +651,7 @@ extension WhoopStore {
             }
             // steps: stream=steps → step_counter (col 8).
             for r in try Row.fetchAll(db, sql:
-                "SELECT ts, counter FROM stepSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
+                "SELECT ts, counter FROM \(RawStream.steps.union) AS stepSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
                 arguments: [deviceId, floor]) {
                 var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "steps"
                 row.cols[6] = WhoopStore.intStr(r["counter"])
@@ -657,7 +677,7 @@ extension WhoopStore {
             }
             // skintemp: stream=skintemp → skintemp_raw (col 13).
             for r in try Row.fetchAll(db, sql:
-                "SELECT ts, raw FROM skinTempSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
+                "SELECT ts, raw FROM \(RawStream.skinTemp.union) AS skinTempSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
                 arguments: [deviceId, floor]) {
                 var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "skintemp"
                 row.cols[11] = WhoopStore.intStr(r["raw"])
@@ -674,7 +694,7 @@ extension WhoopStore {
             // band sleep_state (#175): stream=band_sleep_state → band_sleep_state (col 15). The strap's
             // OWN @81 high-nibble state (0 wake/1 still/2 asleep/3 up), carried verbatim.
             for r in try Row.fetchAll(db, sql:
-                "SELECT ts, state FROM sleepStateSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
+                "SELECT ts, state FROM \(RawStream.sleepState.union) AS sleepStateSample WHERE deviceId = ? AND ts >= ? ORDER BY ts",
                 arguments: [deviceId, floor]) {
                 var row = RawCSVRow(ts: r["ts"]); row.cols[0] = "band_sleep_state"
                 row.cols[13] = WhoopStore.intStr(r["state"])
@@ -757,20 +777,20 @@ extension WhoopStore {
         // toolchains/machines (reported by a contributor building locally); splitting it is
         // behaviour-identical and trivial to type-check.
         try syncRead { db in
-            let hr = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM hrSample") ?? 0
-            let rr = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM rrInterval") ?? 0
+            let hr = try Int.fetchOne(db, sql: "SELECT \(RawStream.hr.totalCount)") ?? 0
+            let rr = try Int.fetchOne(db, sql: "SELECT \(RawStream.rr.totalCount)") ?? 0
             let events = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM event") ?? 0
             let battery = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM battery") ?? 0
             let spo2 = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM spo2Sample") ?? 0
-            let skinTemp = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM skinTempSample") ?? 0
+            let skinTemp = try Int.fetchOne(db, sql: "SELECT \(RawStream.skinTemp.totalCount)") ?? 0
             let resp = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM respSample") ?? 0
-            let gravity = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM gravitySample") ?? 0
+            let gravity = try Int.fetchOne(db, sql: "SELECT \(RawStream.gravity.totalCount)") ?? 0
             return (hr, rr, events, battery, spo2, skinTemp, resp, gravity)
         }
     }
 
     public func stepCountForTest() async throws -> Int {
-        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stepSample") ?? 0 }
+        try syncRead { db in try Int.fetchOne(db, sql: "SELECT \(RawStream.steps.totalCount)") ?? 0 }
     }
 
     /// The strap's OWN banked band sleep_state samples (#175) in `[from, to]` for one device, ascending by
@@ -781,7 +801,7 @@ extension WhoopStore {
         -> [SleepStateSample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, state, rawByte FROM sleepStateSample
+                SELECT ts, state, rawByte FROM \(RawStream.sleepState.union) AS sleepStateSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
@@ -792,7 +812,7 @@ extension WhoopStore {
     }
 
     public func sleepStateCountForTest() async throws -> Int {
-        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sleepStateSample") ?? 0 }
+        try syncRead { db in try Int.fetchOne(db, sql: "SELECT \(RawStream.sleepState.totalCount)") ?? 0 }
     }
 
     /// The remaining 5/MG v18 per-second fields (v31) in `[from, to]` for one device, ascending by ts.
@@ -803,7 +823,7 @@ extension WhoopStore {
         -> [V18AuxSample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, fields FROM v18AuxSample
+                SELECT ts, fields FROM \(RawStream.v18Aux.union) AS v18AuxSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
@@ -812,7 +832,7 @@ extension WhoopStore {
     }
 
     public func v18AuxCountForTest() async throws -> Int {
-        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM v18AuxSample") ?? 0 }
+        try syncRead { db in try Int.fetchOne(db, sql: "SELECT \(RawStream.v18Aux.totalCount)") ?? 0 }
     }
 
     public func ppgHrCountForTest() async throws -> Int {
@@ -862,6 +882,7 @@ extension WhoopStore {
     /// worth testing rather than assuming. Test-only (#823).
     public func insertLegacyRrWithoutOrdForTest(deviceId: String, ts: Int, rrMs: Int) async throws {
         try syncWrite { db in
+            try RawColdTier.unseal(db, stream: .rr, deviceId: deviceId, timestamps: [ts])
             try db.execute(sql: """
                 INSERT INTO rrInterval (deviceId, ts, rrMs, seq, ord) VALUES (?, ?, ?, 0, NULL)
                 ON CONFLICT(deviceId, ts, rrMs, seq) DO NOTHING
@@ -873,7 +894,7 @@ extension WhoopStore {
     public func rrOrdValuesForTest(deviceId: String, ts: Int) async throws -> [Int?] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ord FROM rrInterval WHERE deviceId = ? AND ts = ?
+                SELECT ord FROM \(RawStream.rr.union) AS rrInterval WHERE deviceId = ? AND ts = ?
                 ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC
                 """, arguments: [deviceId, ts]).map { $0["ord"] }
         }
@@ -885,7 +906,7 @@ extension WhoopStore {
     public func rrRowsWithChannelForTest(deviceId: String) async throws -> [(rrMs: Int, srcChannel: Int?)] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT rrMs, srcChannel FROM rrInterval WHERE deviceId = ?
+                SELECT rrMs, srcChannel FROM \(RawStream.rr.union) AS rrInterval WHERE deviceId = ?
                 ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC
                 """, arguments: [deviceId]).map { (rrMs: $0["rrMs"], srcChannel: $0["srcChannel"]) }
         }
@@ -905,7 +926,7 @@ extension WhoopStore {
     public func rrSuspectRowsForTest(deviceId: String) async throws -> [(ts: Int, tsSuspect: Int?)] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, tsSuspect FROM rrInterval WHERE deviceId = ? ORDER BY ts ASC
+                SELECT ts, tsSuspect FROM \(RawStream.rr.union) AS rrInterval WHERE deviceId = ? ORDER BY ts ASC
                 """, arguments: [deviceId]).map { (ts: $0["ts"], tsSuspect: $0["tsSuspect"]) }
         }
     }

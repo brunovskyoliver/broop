@@ -117,6 +117,7 @@ public actor WhoopStore {
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
             // A big transaction grows the WAL; without a limit the file keeps that size afterwards.
             try db.execute(sql: "PRAGMA journal_size_limit = 67108864")
+            try RawColdTier.register(db)
         }
         config.busyMode = .timeout(5)
         let pool = try await StoreOpenGate.shared.openAndMigrate(path: path, configuration: config)
@@ -161,7 +162,9 @@ public actor WhoopStore {
     /// is the one that gets the Pool (#755). Tests that need real read/write concurrency open a
     /// file-backed Pool directly.
     public static func inMemory() async throws -> WhoopStore {
-        try WhoopStore(dbWriter: try DatabaseQueue())
+        var config = Configuration()
+        config.prepareDatabase { db in try RawColdTier.register(db) }
+        return try WhoopStore(dbWriter: try DatabaseQueue(configuration: config))
     }
 
     // MARK: - Synchronous GRDB helpers

@@ -62,13 +62,13 @@ extension WhoopStore {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, bpm FROM (
-                    SELECT ts, bpm FROM hrSample
+                    SELECT ts, bpm FROM \(RawStream.hr.union) AS hrSample
                     WHERE deviceId = ? AND ts >= ? AND ts <= ?
                     UNION ALL
                     SELECT p.ts, CAST(ROUND(p.bpm) AS INTEGER) AS bpm FROM ppgHrSample p
                     WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
                       AND NOT EXISTS (
-                        SELECT 1 FROM hrSample h
+                        SELECT 1 FROM \(RawStream.hr.union) h
                         WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
                 )
                 ORDER BY ts ASC LIMIT ?
@@ -106,10 +106,9 @@ extension WhoopStore {
             // COUNT(*) and COALESCE(MAX(ts),0) are both NON-NULL, and the aggregate query always returns
             // exactly one row, so fetchOne is non-nil and the columns read straight into Int. The guard is
             // belt-and-suspenders.
-            guard let row = try Row.fetchOne(db, sql: """
-                SELECT COUNT(*) AS c, COALESCE(MAX(ts), 0) AS m FROM hrSample
-                WHERE deviceId = ? AND ts >= ? AND ts <= ?
-                """, arguments: [deviceId, from, to]) else { return (0, 0) }
+            let w = RawStream.hr.windowCountMax(device: ":d", from: from, to: to)
+            guard let row = try Row.fetchOne(db, sql: "SELECT \(w.count) AS c, COALESCE(\(w.max), 0) AS m",
+                                             arguments: ["d": deviceId]) else { return (0, 0) }
             let c: Int = row["c"]
             let m: Int = row["m"]
             return (c, m)
@@ -139,7 +138,7 @@ extension WhoopStore {
         defer { StoreProbeRecorder.record(.ownerHr, nanos: DispatchTime.now().uptimeNanoseconds &- probeStarted) }
         return try syncRead { db in
             try Bool.fetchOne(db, sql: """
-                SELECT EXISTS(SELECT 1 FROM hrSample WHERE deviceId = ? AND ts >= ? AND ts <= ?)
+                SELECT EXISTS(SELECT 1 FROM \(RawStream.hr.union) AS hrSample WHERE deviceId = ? AND ts >= ? AND ts <= ?)
                     OR EXISTS(SELECT 1 FROM ppgHrSample WHERE deviceId = ? AND ts >= ? AND ts <= ?)
                 """, arguments: [deviceId, from, to, deviceId, from, to]) ?? false
         }
@@ -158,10 +157,9 @@ extension WhoopStore {
         let probeStarted = DispatchTime.now().uptimeNanoseconds
         defer { StoreProbeRecorder.record(.gravityFp, nanos: DispatchTime.now().uptimeNanoseconds &- probeStarted) }
         return try syncRead { db in
-            guard let row = try Row.fetchOne(db, sql: """
-                SELECT COUNT(*) AS c, COALESCE(MAX(ts), 0) AS m FROM gravitySample
-                WHERE deviceId = ? AND ts >= ? AND ts <= ?
-                """, arguments: [deviceId, from, to]) else { return (0, 0) }
+            let w = RawStream.gravity.windowCountMax(device: ":d", from: from, to: to)
+            guard let row = try Row.fetchOne(db, sql: "SELECT \(w.count) AS c, COALESCE(\(w.max), 0) AS m",
+                                             arguments: ["d": deviceId]) else { return (0, 0) }
             let c: Int = row["c"]
             let m: Int = row["m"]
             return (c, m)
@@ -179,7 +177,7 @@ extension WhoopStore {
     public func hrFingerprint() async throws -> (count: Int, maxTs: Int) {
         try syncRead { db in
             guard let row = try Row.fetchOne(db, sql: """
-                SELECT COUNT(*) AS c, COALESCE(MAX(ts), 0) AS m FROM hrSample
+                SELECT \(RawStream.hr.totalCount) AS c, COALESCE(\(RawStream.hr.maxTs()), 0) AS m
                 """) else { return (0, 0) }
             let c: Int = row["c"]
             let m: Int = row["m"]
@@ -202,26 +200,27 @@ extension WhoopStore {
         try syncRead { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT
-                  (SELECT COUNT(*) FROM hrSample) AS hc,
-                  (SELECT COALESCE(MAX(ts), 0) FROM hrSample) AS hm,
+                  \(RawStream.hr.totalCount) AS hc,
+                  COALESCE(\(RawStream.hr.maxTs()), 0) AS hm,
                   (SELECT COUNT(*) FROM ppgHrSample) AS p,
-                  (SELECT COUNT(*) FROM rrInterval) AS r,
-                  (SELECT COUNT(*) FROM rrInterval WHERE srcChannel = 5
-                     AND (tsSuspect IS NULL OR tsSuspect <> 1)) AS w5,
-                  (SELECT COUNT(*) FROM rrInterval WHERE srcChannel = 7
-                     AND (tsSuspect IS NULL OR tsSuspect <> 1)) AS w7,
-                  (SELECT COUNT(*) FROM rrInterval WHERE srcChannel IN (5, 6, 7)) AS w5tagged,
-                  (SELECT COUNT(*) FROM rrInterval WHERE srcChannel = 8) AS w4history,
+                  \(RawStream.rr.totalCount) AS r,
+                  rrw.w5 AS w5, rrw.w7 AS w7, rrw.w5tagged AS w5tagged, rrw.w4history AS w4history,
                   (SELECT COALESCE(GROUP_CONCAT(identity, ';'), '') FROM
                     (SELECT QUOTE(id) || ':' || QUOTE(brand) || ':' || QUOTE(model) || ':' || QUOTE(status) AS identity
                      FROM pairedDevice ORDER BY id)) AS registry,
                   (SELECT COUNT(*) FROM respSample) AS x,
-                  (SELECT COUNT(*) FROM gravitySample) AS g,
-                  (SELECT COUNT(*) FROM sleepStateSample) AS s,
+                  \(RawStream.gravity.totalCount) AS g,
+                  \(RawStream.sleepState.totalCount) AS s,
                   (SELECT COALESCE(MAX(rowid), 0) FROM event) AS e,
                   (SELECT COUNT(*) FROM spo2Sample) AS o,
-                  (SELECT COUNT(*) FROM skinTempSample) AS t,
-                  (SELECT COUNT(*) FROM stepSample) AS z
+                  \(RawStream.skinTemp.totalCount) AS t,
+                  \(RawStream.steps.totalCount) AS z
+                -- The four WHOOP-transport counts in one walk: sealed beats have no index to count over.
+                FROM (SELECT COUNT(CASE WHEN srcChannel = 5 AND (tsSuspect IS NULL OR tsSuspect <> 1) THEN 1 END) AS w5,
+                             COUNT(CASE WHEN srcChannel = 7 AND (tsSuspect IS NULL OR tsSuspect <> 1) THEN 1 END) AS w7,
+                             COUNT(CASE WHEN srcChannel IN (5, 6, 7) THEN 1 END) AS w5tagged,
+                             COUNT(CASE WHEN srcChannel = 8 THEN 1 END) AS w4history
+                      FROM \(RawStream.rr.union) WHERE srcChannel IN (5, 6, 7, 8)) AS rrw
                 """) else { return "" }
             let hc: Int = row["hc"], hm: Int = row["hm"]
             let keys = ["p", "r", "x", "g", "s", "e", "o", "t", "z"]
@@ -277,7 +276,7 @@ extension WhoopStore {
                   (SELECT COUNT(*) FROM ppgHrSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS pc,
                   (SELECT COALESCE(MAX(ts), 0) FROM ppgHrSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS pm,
                   rr.rc AS rc, rr.rm AS rm, rr.w5 AS w5, rr.w7 AS w7,
-                  EXISTS(SELECT 1 FROM rrInterval WHERE deviceId = :d AND srcChannel IN (5, 6, 7)) AS w5owner,
+                  EXISTS(SELECT 1 FROM \(RawStream.rr.union) AS rrInterval WHERE deviceId = :d AND srcChannel IN (5, 6, 7)) AS w5owner,
                   rr.w4h AS w4h,
                   COALESCE((SELECT QUOTE(brand) || ':' || QUOTE(model) FROM pairedDevice
                             WHERE id = :d), 'absent') AS registry,
@@ -285,14 +284,14 @@ extension WhoopStore {
                   (SELECT COALESCE(MAX(ts), 0) FROM respSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS xm,
                   (SELECT COUNT(*) FROM spo2Sample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS oc,
                   (SELECT COALESCE(MAX(ts), 0) FROM spo2Sample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS om,
-                  (SELECT COUNT(*) FROM gravitySample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS gc,
-                  (SELECT COALESCE(MAX(ts), 0) FROM gravitySample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS gm,
-                  (SELECT COUNT(*) FROM stepSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS zc,
-                  (SELECT COALESCE(MAX(ts), 0) FROM stepSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS zm,
-                  (SELECT COUNT(*) FROM skinTempSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS tc,
-                  (SELECT COALESCE(MAX(ts), 0) FROM skinTempSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS tm,
-                  (SELECT COUNT(*) FROM sleepStateSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS bc,
-                  (SELECT COALESCE(MAX(ts), 0) FROM sleepStateSample WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS bm,
+                  \(RawStream.gravity.windowCountMax(device: ":d", from: from, to: to).count) AS gc,
+                  COALESCE(\(RawStream.gravity.windowCountMax(device: ":d", from: from, to: to).max), 0) AS gm,
+                  \(RawStream.steps.windowCountMax(device: ":d", from: from, to: to).count) AS zc,
+                  COALESCE(\(RawStream.steps.windowCountMax(device: ":d", from: from, to: to).max), 0) AS zm,
+                  \(RawStream.skinTemp.windowCountMax(device: ":d", from: from, to: to).count) AS tc,
+                  COALESCE(\(RawStream.skinTemp.windowCountMax(device: ":d", from: from, to: to).max), 0) AS tm,
+                  \(RawStream.sleepState.windowCountMax(device: ":d", from: from, to: to).count) AS bc,
+                  COALESCE(\(RawStream.sleepState.windowCountMax(device: ":d", from: from, to: to).max), 0) AS bm,
                   (SELECT COUNT(*) FROM event WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS ec,
                   (SELECT COALESCE(MAX(ts), 0) FROM event WHERE deviceId = :d AND ts >= :f AND ts <= :t) AS em
                 FROM (SELECT
@@ -301,7 +300,7 @@ extension WhoopStore {
                         COUNT(CASE WHEN srcChannel = 5 THEN 1 END) AS w5,
                         COUNT(CASE WHEN srcChannel = 7 THEN 1 END) AS w7,
                         COUNT(CASE WHEN srcChannel = :whoop4Historical THEN 1 END) AS w4h
-                      FROM rrInterval WHERE deviceId = :d AND ts >= :f AND ts <= :t
+                      FROM \(RawStream.rr.union) AS rrInterval WHERE deviceId = :d AND ts >= :f AND ts <= :t
                         AND (tsSuspect IS NULL OR tsSuspect <> 1)) AS rr
                 """, arguments: ["d": deviceId, "f": from, "t": to,
                                  "rrx": RRSourceChannel.spo2Ibi.rawValue,
@@ -346,20 +345,20 @@ extension WhoopStore {
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) AS n, AVG(bpm) AS avg, MAX(bpm) AS max FROM (
                     SELECT ts, MIN(pri), bpm FROM (
-                        SELECT ts, bpm, 0 AS pri FROM hrSample
+                        SELECT ts, bpm, 0 AS pri FROM \(RawStream.hr.union) AS hrSample
                         WHERE deviceId = ? AND ts >= ? AND ts <= ?
                         UNION ALL
                         SELECT p.ts, CAST(ROUND(p.bpm) AS INTEGER), 0 FROM ppgHrSample p
                         WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
-                          AND NOT EXISTS (SELECT 1 FROM hrSample h
+                          AND NOT EXISTS (SELECT 1 FROM \(RawStream.hr.union) h
                                           WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
                         UNION ALL
-                        SELECT ts, bpm, 1 FROM hrSample
+                        SELECT ts, bpm, 1 FROM \(RawStream.hr.union) AS hrSample
                         WHERE deviceId = ? AND ts >= ? AND ts <= ?
                         UNION ALL
                         SELECT p.ts, CAST(ROUND(p.bpm) AS INTEGER), 1 FROM ppgHrSample p
                         WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
-                          AND NOT EXISTS (SELECT 1 FROM hrSample h
+                          AND NOT EXISTS (SELECT 1 FROM \(RawStream.hr.union) h
                                           WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
                     ) GROUP BY ts
                 )
@@ -388,13 +387,13 @@ extension WhoopStore {
             try Row.fetchAll(db, sql: """
                 SELECT (ts / ?) * ? AS bucket, AVG(bpm) AS avgBpm, MIN(conf) AS minConf,
                        MIN(bpm) AS minBpm, MAX(bpm) AS maxBpm FROM (
-                    SELECT ts, bpm, 1.0 AS conf FROM hrSample
+                    SELECT ts, bpm, 1.0 AS conf FROM \(RawStream.hr.union) AS hrSample
                     WHERE deviceId = ? AND ts >= ? AND ts <= ?
                     UNION ALL
                     SELECT p.ts, p.bpm, p.conf FROM ppgHrSample p
                     WHERE p.deviceId = ? AND p.ts >= ? AND p.ts <= ?
                       AND NOT EXISTS (
-                        SELECT 1 FROM hrSample h
+                        SELECT 1 FROM \(RawStream.hr.union) h
                         WHERE h.deviceId = p.deviceId AND h.ts = p.ts)
                 )
                 GROUP BY ts / ?
@@ -487,12 +486,12 @@ extension WhoopStore {
                 if try Self.isWhoop4RRSource(db: db, deviceId: deviceId) { strictWhoop4History = true }
                 else {
                     strictWhoop4History = try Bool.fetchOne(db,
-                        sql: "SELECT EXISTS(SELECT 1 FROM rrInterval WHERE deviceId = ? AND srcChannel = ?)",
+                        sql: "SELECT EXISTS(SELECT 1 FROM \(RawStream.rr.union) AS rrInterval WHERE deviceId = ? AND srcChannel = ?)",
                         arguments: [deviceId, RRSourceChannel.whoop4Historical.rawValue]) ?? false
                 }
             }
             let whoop5SourcePredicate = """
-                srcChannel = (SELECT MIN(srcChannel) FROM rrInterval
+                srcChannel = (SELECT MIN(srcChannel) FROM \(RawStream.rr.union) AS rrInterval
                     WHERE deviceId = :d AND ts >= :f AND ts <= :t AND srcChannel IN \(Self.scorableWhoop5Channels)
                     AND (tsSuspect IS NULL OR tsSuspect <> 1))
                 """
@@ -508,7 +507,7 @@ extension WhoopStore {
                                         WHEN srcChannel = :whoop4Realtime THEN 2
                                         WHEN srcChannel = :whoop4Standard THEN 3
                                         WHEN srcChannel IS NULL THEN 4 END) AS sourceChoice
-                        FROM rrInterval
+                        FROM \(RawStream.rr.union) AS rrInterval
                         WHERE deviceId = :d
                           AND ts >= (:f / 3600) * 3600
                           AND ts < ((:t / 3600) + 1) * 3600
@@ -517,7 +516,7 @@ extension WhoopStore {
                                (:whoop4Historical, :whoop4Realtime, :whoop4Standard))
                         GROUP BY ts / 3600
                     )
-                    SELECT r.ts, r.rrMs, r.srcChannel, r.ord, r.seq FROM rrInterval r
+                    SELECT r.ts, r.rrMs, r.srcChannel, r.ord, r.seq FROM \(RawStream.rr.union) r
                     JOIN whoop4HourChoice h ON h.hour = r.ts / 3600
                     WHERE r.deviceId = :d AND r.ts >= :f AND r.ts <= :t
                       AND (r.srcChannel IS NULL OR r.srcChannel <> :rrx)
@@ -530,7 +529,7 @@ extension WhoopStore {
                     """
             } else if strictWhoop5 {
                 sql = """
-                    SELECT ts, rrMs, srcChannel, ord, seq FROM rrInterval
+                    SELECT ts, rrMs, srcChannel, ord, seq FROM \(RawStream.rr.union) AS rrInterval
                     WHERE deviceId = :d AND ts >= :f AND ts <= :t
                     AND (srcChannel IS NULL OR srcChannel <> :rrx)
                     AND \(whoop5SourcePredicate)
@@ -545,12 +544,12 @@ extension WhoopStore {
                 sql = """
                     WITH ouraHourChoice AS MATERIALIZED (
                         SELECT ts / 3600 AS hour, SUM(srcChannel = 1) > SUM(srcChannel <> 1) AS keepGreen
-                        FROM rrInterval
+                        FROM \(RawStream.rr.union) AS rrInterval
                         WHERE deviceId = :d AND ts >= :f AND ts <= :t AND srcChannel IN \(Self.scorableOuraChannels)
                           AND (tsSuspect IS NULL OR tsSuspect <> 1)
                         GROUP BY ts / 3600
                     )
-                    SELECT ts, rrMs, srcChannel, ord, seq FROM rrInterval
+                    SELECT ts, rrMs, srcChannel, ord, seq FROM \(RawStream.rr.union) AS rrInterval
                     LEFT JOIN ouraHourChoice h ON h.hour = rrInterval.ts / 3600
                     WHERE deviceId = :d AND ts >= :f AND ts <= :t
                     AND (srcChannel IS NULL OR srcChannel <> :rrx)
@@ -605,7 +604,7 @@ extension WhoopStore {
     public func rawRrIntervals(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [RRInterval] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, rrMs, srcChannel, ord, seq FROM rrInterval
+                SELECT ts, rrMs, srcChannel, ord, seq FROM \(RawStream.rr.union) AS rrInterval
                 WHERE deviceId = :d AND ts >= :f AND ts <= :t
                 AND (srcChannel IS NULL OR srcChannel <> :rrx)
                 AND (tsSuspect IS NULL OR tsSuspect <> 1)
@@ -681,7 +680,7 @@ extension WhoopStore {
     public func skinTempSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [SkinTempSample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, raw, aux1Raw, aux2Raw FROM skinTempSample
+                SELECT ts, raw, aux1Raw, aux2Raw FROM \(RawStream.skinTemp.union) AS skinTempSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts ASC LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
@@ -696,7 +695,7 @@ extension WhoopStore {
     public func stepSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [StepSample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, counter, activityClass FROM stepSample
+                SELECT ts, counter, activityClass FROM \(RawStream.steps.union) AS stepSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts ASC LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
@@ -711,7 +710,7 @@ extension WhoopStore {
                                 limit: Int) async throws -> [StepSample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, counter, activityClass FROM stepSample
+                SELECT ts, counter, activityClass FROM \(RawStream.steps.union) AS stepSample
                 WHERE deviceId = ? AND ts > ? AND ts < ?
                 ORDER BY ts ASC LIMIT ?
                 """, arguments: [deviceId, afterExclusive, endExclusive, limit]).map {
@@ -725,7 +724,7 @@ extension WhoopStore {
     public func stepSampleBefore(deviceId: String, before: Int) async throws -> StepSample? {
         try syncRead { db in
             try Row.fetchOne(db, sql: """
-                SELECT ts, counter, activityClass FROM stepSample
+                SELECT ts, counter, activityClass FROM \(RawStream.steps.union) AS stepSample
                 WHERE deviceId = ? AND ts < ? ORDER BY ts DESC LIMIT 1
                 """, arguments: [deviceId, before]).map {
                     StepSample(ts: $0["ts"], counter: $0["counter"], activityClass: $0["activityClass"])
@@ -737,7 +736,7 @@ extension WhoopStore {
     public func hasStepActivityClasses(deviceId: String, from: Int, to: Int) async throws -> Bool {
         try syncRead { db in
             try Int.fetchOne(db, sql: """
-                SELECT EXISTS(SELECT 1 FROM stepSample
+                SELECT EXISTS(SELECT 1 FROM \(RawStream.steps.union) AS stepSample
                 WHERE deviceId = ? AND ts >= ? AND ts < ? AND activityClass IS NOT NULL)
                 """, arguments: [deviceId, from, to]) == 1
         }
@@ -747,10 +746,11 @@ extension WhoopStore {
     public func stepTimestampCoverage(deviceId: String, from: Int, to: Int) async throws
         -> (first: Int?, last: Int?) {
         try syncRead { db in
+            // Ordered LIMIT 1 rather than MIN/MAX, so a sealed window decodes one chunk at each end.
             let row = try Row.fetchOne(db, sql: """
-                SELECT MIN(ts) AS firstTs, MAX(ts) AS lastTs FROM stepSample
-                WHERE deviceId = ? AND ts >= ? AND ts < ?
-                """, arguments: [deviceId, from, to])
+                SELECT (SELECT ts FROM \(RawStream.steps.union) WHERE deviceId = :d AND ts >= :f AND ts < :t ORDER BY ts LIMIT 1) AS firstTs,
+                       (SELECT ts FROM \(RawStream.steps.union) WHERE deviceId = :d AND ts >= :f AND ts < :t ORDER BY ts DESC LIMIT 1) AS lastTs
+                """, arguments: ["d": deviceId, "f": from, "t": to])
             return (row?["firstTs"], row?["lastTs"])
         }
     }
@@ -765,12 +765,12 @@ extension WhoopStore {
     public func stepDiagnosticMotionCounts(deviceId: String, from: Int, to: Int) async throws
         -> (gravity: Int, aux: Int) {
         try syncRead { db in
-            let gravity = try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM gravitySample WHERE deviceId = ? AND ts >= ? AND ts < ?
-                """, arguments: [deviceId, from, to]) ?? 0
-            let aux = try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM v18AuxSample WHERE deviceId = ? AND ts >= ? AND ts < ?
-                """, arguments: [deviceId, from, to]) ?? 0
+            // `ts < to` is `ts <= to - 1`; a window ending at Int.min holds nothing either way.
+            guard to > Int.min else { return (0, 0) }
+            let gravity = try Int.fetchOne(db, sql: "SELECT \(RawStream.gravity.windowCountMax(device: ":d", from: from, to: to - 1).count)",
+                                           arguments: ["d": deviceId]) ?? 0
+            let aux = try Int.fetchOne(db, sql: "SELECT \(RawStream.v18Aux.windowCountMax(device: ":d", from: from, to: to - 1).count)",
+                                       arguments: ["d": deviceId]) ?? 0
             return (gravity, aux)
         }
     }
@@ -824,10 +824,10 @@ extension WhoopStore {
         try syncRead { db in
             let row = try Row.fetchOne(db, sql: """
                 SELECT
-                  EXISTS(SELECT 1 FROM hrSample WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS hr,
-                  EXISTS(SELECT 1 FROM rrInterval WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS rr,
-                  EXISTS(SELECT 1 FROM gravitySample WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS gravity,
-                  EXISTS(SELECT 1 FROM stepSample WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS steps
+                  EXISTS(SELECT 1 FROM \(RawStream.hr.union) AS hrSample WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS hr,
+                  EXISTS(SELECT 1 FROM \(RawStream.rr.union) AS rrInterval WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS rr,
+                  EXISTS(SELECT 1 FROM \(RawStream.gravity.union) AS gravitySample WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS gravity,
+                  EXISTS(SELECT 1 FROM \(RawStream.steps.union) AS stepSample WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS steps
                 """, arguments: [deviceId, from, to, deviceId, from, to,
                                  deviceId, from, to, deviceId, from, to])
             return StreamPresence(
@@ -840,14 +840,14 @@ extension WhoopStore {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT deviceId, SUM(n) AS total FROM (
-                    SELECT deviceId, COUNT(*) AS n FROM hrSample WHERE ts >= ? AND ts <= ? GROUP BY deviceId
+                    \(RawStream.hr.windowCountsByDevice(from: from, to: to))
                     UNION ALL
                     SELECT deviceId, COUNT(*) AS n FROM ppgHrSample WHERE ts >= ? AND ts <= ? GROUP BY deviceId
                     UNION ALL
-                    SELECT deviceId, COUNT(*) AS n FROM gravitySample WHERE ts >= ? AND ts <= ? GROUP BY deviceId
+                    \(RawStream.gravity.windowCountsByDevice(from: from, to: to))
                 )
                 GROUP BY deviceId
-                """, arguments: [from, to, from, to, from, to])
+                """, arguments: [from, to])
             .map { row -> (String, Int) in
                 // `deviceId` is NOT NULL and the GROUP BY guarantees SUM(n) >= 1 per row, so both read
                 // straight into non-optionals - same idiom as `hrFingerprint` above.
@@ -862,7 +862,7 @@ extension WhoopStore {
     public func gravitySamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [GravitySample] {
         try syncRead { db in
             try Row.fetchAll(db, sql: """
-                SELECT ts, x, y, z, dynAccel FROM gravitySample
+                SELECT ts, x, y, z, dynAccel FROM \(RawStream.gravity.union) AS gravitySample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
                 ORDER BY ts ASC LIMIT ?
                 """, arguments: [deviceId, from, to, limit])
@@ -891,9 +891,11 @@ extension WhoopStore {
                 SELECT MAX(m) FROM (
                     SELECT (SELECT MAX(ts) FROM hrSample WHERE deviceId = ?) AS m
                     UNION ALL
+                    SELECT (SELECT MAX(maxTs) FROM rawChunk WHERE stream = \(RawStream.hr.rawValue) AND deviceId = ?)
+                    UNION ALL
                     SELECT (SELECT MAX(ts) FROM ppgHrSample WHERE deviceId = ?)
                 )
-                """, arguments: [deviceId, deviceId])
+                """, arguments: [deviceId, deviceId, deviceId])
         }
     }
 
@@ -916,7 +918,7 @@ extension WhoopStore {
         try syncRead { db in
             var out: [String: Int] = [:]
             for (key, table) in Self.rawTableKeys {
-                if let n = try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") { out[key] = n }
+                if let n = try? Int.fetchOne(db, sql: "SELECT \(Self.rowCount(table))") { out[key] = n }
             }
             return out
         }
@@ -937,6 +939,8 @@ extension WhoopStore {
     /// nominal 8. It EXCLUDES index pages, page slack and the WAL, so it is a payload lower bound, not the
     /// file size — compare it against `db_bytes` in the same probe rather than expecting the two to meet.
     /// An unreadable table is omitted, on the same reasoning as the row counts: absent is not zero.
+    /// A sealed stream counts its hot rows that way and its sealed hours at their real chunk bytes
+    /// (`SUM(LENGTH(data))`), which is what they occupy; nothing is decoded.
     /// `rowCounts` lets a caller that already has them - the Test Centre probe does - avoid a second
     /// `COUNT(*)` pass over every table. That matters here more than it usually would: this diagnostic is
     /// read on the multi-gigabyte stores it exists to explain, where each count is a full scan, so a tool
@@ -946,10 +950,25 @@ extension WhoopStore {
         try syncRead { db in
             var out: [String: Int] = [:]
             for (key, table) in Self.rawTableKeys {
-                let known = rowCounts?[key]
-                guard let rows = known ?? (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)")),
-                      rows > 0
-                else { continue }
+                let stream = RawStream.allCases.first { $0.table == table }
+                var coldBytes = 0
+                var rows: Int
+                if let stream {
+                    coldBytes = (try? Int.fetchOne(db, sql: """
+                        SELECT COALESCE(SUM(LENGTH(data)), 0) FROM rawChunk WHERE stream = \(stream.rawValue)
+                        """)) ?? 0
+                    guard let hot = try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") else { continue }
+                    rows = hot
+                    if rows == 0 {
+                        if coldBytes > 0 { out[key] = coldBytes }
+                        continue
+                    }
+                } else {
+                    let known = rowCounts?[key]
+                    guard let n = known ?? (try? Int.fetchOne(db, sql: "SELECT \(Self.rowCount(table))")), n > 0
+                    else { continue }
+                    rows = n
+                }
                 let cols = try? Row.fetchAll(db, sql: "PRAGMA table_info(\(table))")
                 guard let cols, !cols.isEmpty else { continue }
                 // Table and column names come from the schema, never from user input, so interpolating
@@ -971,11 +990,16 @@ extension WhoopStore {
                     // here would full-scan the very tables the sampling exists to avoid scanning.
                     + "FROM \(table) LIMIT \(max(1, sampleRows)))"
                 if let mean = try? Double.fetchOne(db, sql: sql), mean.isFinite, mean >= 0 {
-                    out[key] = Int((mean * Double(rows)).rounded())
+                    out[key] = Int((mean * Double(rows)).rounded()) + coldBytes
                 }
             }
             return out
         }
+    }
+
+    /// `COUNT(*)` of a raw table as a scalar expression, counting sealed rows too.
+    static func rowCount(_ table: String) -> String {
+        RawStream.allCases.first { $0.table == table }?.totalCount ?? "(SELECT COUNT(*) FROM \(table))"
     }
 
     /// The decoded stream tables and the key each reports under. The keys are Android's, verbatim.
@@ -1022,7 +1046,7 @@ extension WhoopStore {
             // Table names are compile-time constants (never user input), so the interpolation is safe.
             var decoded = 0
             for (_, t) in Self.rawTableKeys {
-                decoded += try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(t)") ?? 0
+                decoded += try Int.fetchOne(db, sql: "SELECT \(Self.rowCount(t))") ?? 0
             }
             let outbox = try Self.rawOutbox(db)
             return (decoded, outbox.batches, outbox.bytes)

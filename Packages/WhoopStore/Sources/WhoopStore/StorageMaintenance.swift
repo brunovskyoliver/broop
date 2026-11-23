@@ -47,6 +47,12 @@ extension WhoopStore {
     /// resumes. Stops between tables when `shouldContinue` turns false. Writers queue behind a running step.
     public func runStorageMaintenance(now: Int, compact: Bool,
                                       shouldContinue: @Sendable () -> Bool = { true }) async throws {
+        try await runStorageMaintenance(now: now, compact: compact, sealing: true, shouldContinue: shouldContinue)
+    }
+
+    /// `sealing: false` is the pass as it was before the cold tier, which tests use as the reference.
+    func runStorageMaintenance(now: Int, compact: Bool, sealing: Bool,
+                               shouldContinue: @Sendable () -> Bool = { true }) async throws {
         // The floor commits before any row goes, so a kill mid-way can never leave a day both rescorable
         // and stripped of its raw data.
         let cutoff = (now - RawRetention.fullDetailDays * 86_400) / 86_400 * 86_400
@@ -66,6 +72,15 @@ extension WhoopStore {
             } || rebuilt
         }
         Self.removeStaleReplacedDatabases(nextTo: dbWriter.path, now: now)
+        // Pack closed hours into the cold tier. Not while a stream is still a rowid table: the rebuild
+        // copies rows, and its first run on an old store is the one that needs the charger anyway.
+        if sealing, !(try await storageNeedsCompaction()) {
+            let budget = compact ? Int.max : RawColdTier.hoursPerPassWithoutCharger
+            for stream in RawStream.allCases {
+                guard shouldContinue() else { return }
+                _ = try RawColdTier.seal(stream, now: now, hourBudget: budget, writer: dbWriter, shouldContinue: shouldContinue)
+            }
+        }
         guard shouldContinue(), compact else { return }
         let reclaimable = try syncRead { db -> Int in
             let free = try Int.fetchOne(db, sql: "PRAGMA freelist_count") ?? 0
@@ -115,6 +130,11 @@ extension WhoopStore {
             SELECT sql FROM sqlite_master
             WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL
             """, arguments: [table])
+        // Sealed hours are moved back first so the copy below sees every row. Normally there are none:
+        // the seal pass waits until no stream is a rowid table.
+        if let stream = RawStream.allCases.first(where: { $0.table == table }) {
+            try RawColdTier.unseal(db, stream: stream, deviceId: nil, range: Int.min...Int.max)
+        }
         let temp = table + "__compact"
         guard let nameRange = createSQL.range(of: table) else { return }
         try db.execute(sql: createSQL.replacingCharacters(in: nameRange, with: temp) + " WITHOUT ROWID")
@@ -138,6 +158,9 @@ extension WhoopStore {
             // Only the days the floor just passed still need thinning. A week's reach covers maintenance
             // that did not run for a while without rewriting the whole history every day.
             let from = floor - 7 * 86_400
+            // Thinning rewrites these hours, so sealed ones come back to the hot table first; the next
+            // seal pass packs the thinned rows again. Older sealed hours are already thinned.
+            try RawColdTier.unseal(db, stream: .hr, deviceId: nil, range: from...(floor - 1))
             try db.execute(sql: """
                 CREATE TEMP TABLE hrThin AS
                 SELECT deviceId, ts / \(RawRetention.thinnedHRBucketSeconds) * \(RawRetention.thinnedHRBucketSeconds) AS ts,
@@ -149,8 +172,14 @@ extension WhoopStore {
             try db.execute(sql: "DROP TABLE hrThin")
         } else {
             try db.execute(sql: "DELETE FROM \(table) WHERE ts < \(floor)")
+            // `floor` is day-aligned, so a chunk is either wholly below it or not at all.
+            if let stream = RawStream.allCases.first(where: { $0.table == table }) {
+                try RawColdTier.deleteChunks(db, stream: stream, predicate: "hourStart < ?", arguments: [floor])
+            }
         }
     }
+
+    func vacuumForTest() throws { try vacuumStore() }
 
     /// The copy is written to disk: under the store's `temp_store = MEMORY` it would sit in RAM, and a
     /// multi-gigabyte copy gets the app killed. Non-async for GRDB's synchronous overload.

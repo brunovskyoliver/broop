@@ -59,6 +59,12 @@ extension WhoopStore {
             // named in the breakdown, or none of the three - never silently one of them.
             var rawDeleted = 0
             for (_, table) in WhoopStore.rawTableKeys {
+                // Sealed hours that can hold an out-of-bounds row come back to the hot table first, so the
+                // delete and its count see every row.
+                if let stream = RawStream.allCases.first(where: { $0.table == table }) {
+                    try RawColdTier.unseal(db, stream: stream, deviceId: nil, range: Int.min...lo)
+                    try RawColdTier.unseal(db, stream: stream, deviceId: nil, range: (hi / 3600 * 3600)...Int.max)
+                }
                 try db.execute(sql: "DELETE FROM \(table) WHERE ts < ? OR ts > ?",
                                arguments: [lo, hi])
                 rawDeleted += db.changesCount
