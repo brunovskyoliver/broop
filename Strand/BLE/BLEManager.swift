@@ -927,6 +927,8 @@ public final class BLEManager: NSObject, ObservableObject {
     private var rawCaptureInFlight = false
     private var rawCaptureStoppedAt = Date.distantPast
     private var unexpectedImuStopAt = Date.distantPast
+    /// True only for the duration of `stopUnexpectedRealtimeImu`'s two stop writes.
+    private var rawFailSafeStopInFlight = false
     /// Ordered queue of frames awaiting drain through the serial Backfiller task.
     private var backfillFrameQueue: [[UInt8]] = []
     /// True while the drain task is running (prevents a second drain task from launching).
@@ -2235,11 +2237,15 @@ public final class BLEManager: NSObject, ObservableObject {
     @discardableResult
     public func startGroundTruthRawCapture(sessionId: String) -> Bool {
         guard !rawCaptureInFlight else { return false }
+        // 5/MG only, like Android's startGroundTruthImuCapture: on a 4.0 the stop path sends only
+        // STOP_RAW_DATA, which does not stop the motion stream this would turn on.
+        guard selectedModel.deviceFamily == .whoop5 else {
+            log("Raw-data session: not started — realtime IMU capture is WHOOP 5/MG only")
+            return false
+        }
         rawCaptureInFlight = true
         send(.startRawData, payload: [0x01], writeType: .withResponse)
-        send(.toggleIMUMode,
-             payload: selectedModel.deviceFamily == .whoop5 ? [0x01, 0x01] : [0x01],
-             writeType: .withResponse)
+        send(.toggleIMUMode, payload: [0x01, 0x01], writeType: .withResponse)
         log("Raw-data session: started")
         return true
     }
@@ -2255,6 +2261,19 @@ public final class BLEManager: NSObject, ObservableObject {
         rawCaptureInFlight = false
         rawCaptureStoppedAt = Date()
         log("Raw-data session: stopped + flushed")
+    }
+
+    /// Whether the 5/MG send allowlist admits a raw-data opcode (81/82/106). START needs a user-started
+    /// capture in flight. The two STOP writes are also admitted while the fail-safe is stopping an orphaned
+    /// producer, which by definition runs with no capture in flight; without that, its stop was dropped
+    /// here. Twin of Android's `groundTruthImuCommandAllowed` window in `stopUnexpectedRealtimeImu`.
+    nonisolated static func whoop5AdmitsRawDataCommand(_ command: WhoopCommand, captureInFlight: Bool,
+                                                       failSafeStopInFlight: Bool) -> Bool {
+        switch command {
+        case .startRawData: return captureInFlight
+        case .stopRawData, .toggleIMUMode: return captureInFlight || failSafeStopInFlight
+        default: return false
+        }
     }
 
     /// Stop a realtime IMU producer left armed after a crash, lost stop write, or another client.
@@ -2286,6 +2305,8 @@ public final class BLEManager: NSObject, ObservableObject {
               now.timeIntervalSince(unexpectedImuStopAt) >= 30,
               Whoop5Ecg.r17FromFrame(frame) == nil else { return }
         unexpectedImuStopAt = now
+        rawFailSafeStopInFlight = true
+        defer { rawFailSafeStopInFlight = false }
         send(.stopRawData, payload: [0x01], writeType: .withResponse)
         send(.toggleIMUMode, payload: [0x01, 0x00], writeType: .withResponse)
         log("Raw IMU fail-safe: unexpected realtime packet type \(frame[8]) while capture was off; stop requested")
@@ -2379,10 +2400,11 @@ public final class BLEManager: NSObject, ObservableObject {
                 || (DeviceConfigReadProbe.isReadOnlyOpcode(command.rawValue) && deviceConfigReport != nil)
                 || command == .sendHistoricalData || command == .historicalDataResult
                 || command == .setClock || command == .getClock
-                // Bounded Raw Data Collector only. These writes remain impossible unless the explicit
-                // user-started capture window is in flight; normal sync never enables this gate.
-                || (rawCaptureInFlight && (command == .startRawData
-                    || command == .stopRawData || command == .toggleIMUMode))
+                // Bounded Raw Data Collector, plus the fail-safe's stop pair. START remains impossible
+                // unless the explicit user-started capture window is in flight; normal sync never
+                // enables this gate.
+                || Self.whoop5AdmitsRawDataCommand(command, captureInFlight: rawCaptureInFlight,
+                                                   failSafeStopInFlight: rawFailSafeStopInFlight)
                 // SET_CONFIG / SET_FF_VALUE (120), ENABLE direction — the R22 deep-stream unlock. Allowed
                 // only while the deep-data experiment is opted in, and only for a KEY and a VALUE the gate
                 // recognises: one of the sixteen R22 flags carrying that key's own enable value. The clause
