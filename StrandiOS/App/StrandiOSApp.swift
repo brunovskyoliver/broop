@@ -180,7 +180,9 @@ struct StrandiOSApp: App {
             model?.live.append(log: "re-score: background processing time expired before the pass finished (#1538)")
         })
         StorageMaintenanceScheduler.register { [weak model] shouldContinue in
-            await model?.repo.runStorageMaintenance(compact: true, shouldContinue: shouldContinue)
+            guard let model else { return }
+            let result = await model.repo.runStorageMaintenance(compact: true, shouldContinue: shouldContinue)
+            model.live.append(log: "storage maintenance (background): \(result)")
         }
         StorageMaintenanceScheduler.schedule()
         // #2556: its own wake, because every existing one is conditional on something the missing strap
@@ -401,7 +403,11 @@ struct StrandiOSApp: App {
                 SyncStallReminder.shared.requestAuthorizationIfNeeded()
                 CoachBriefScheduler.activateIfEnabled { await model.coach.generateBrief() }
                 model.drainPendingIntents(router: router)
-                Task { await model.repo.runStorageMaintenanceIfDue() }
+                Task {
+                    if let result = await model.repo.runStorageMaintenanceIfDue() {
+                        model.live.append(log: "storage maintenance: \(result)")
+                    }
+                }
                 // iOS starts a Lift Log banner only for an app on screen, so a banner lost while NOOP was in
                 // the background comes back now, whether or not the strap is sending anything.
                 pushLiftActivity()
