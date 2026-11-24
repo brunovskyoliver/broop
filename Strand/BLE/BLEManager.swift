@@ -6716,8 +6716,11 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         configureCollectorFamily()
         // Collection only runs post-bond, so a restored link was already bonded;
         // seed those flags now. `didWriteValueFor` won't re-fire on its own.
-        state.bonded = true
-        didBond = true
+        // Except a strap whose hello is suppressed (#1635): it never bonds, and claiming a bond here
+        // made `shouldStartUnbondedWhoop5Session` decline, so a relaunch left history deferred for good.
+        let restoredBonded = !HelloSuppressionStore.suppressed(p.identifier.uuidString)
+        state.bonded = restoredBonded
+        didBond = restoredBonded
         // #613: didConnect never fires for an ALREADY-connected restored peripheral, so publish the strap
         // identity HERE — BEFORE encryptedBond flips true — so SourceCoordinator sees the ordinary
         // (encryptedBond == false) identity semantics `didConnect` uses (adopt-if-unknown / never clobber a
@@ -6725,8 +6728,10 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         // connectedPeripheralUUID stays nil the whole session: no identity to SourceCoordinator, and the
         // alarm diagnostics read "strap not connected" though the link is up.
         if p.state == .connected { connectedPeripheralUUID = p.identifier.uuidString }
-        state.encryptedBond = true   // a restored link was genuinely encrypted-bonded before (#69)
-        noteGenuineBond(of: p)   // #52: a restored link was genuinely bonded; eligible as a re-adopt target
+        if restoredBonded {
+            state.encryptedBond = true   // a restored link was genuinely encrypted-bonded before (#69)
+            noteGenuineBond(of: p)   // #52: a restored link was genuinely bonded; eligible as a re-adopt target
+        }
         // clockRef is nil in the fresh process after restore, so we must re-request it.
         // Reset the flag so the post-restore didWriteValueFor issues exactly one getClock.
         clockRequested = false
