@@ -171,6 +171,8 @@ public struct DeviceRegistryStore: Sendable {
         // privacy defect this list exists to close, and one the deviceId-column guard test could not
         // catch for a child table keyed only by its parent.
         "liftExercise", "liftProgram", "liftProgramItem", "liftSession", "liftSet",
+        // v52-raw-chunk: the sealed hours of the seven dense streams above, keyed by deviceId like their rows.
+        "rawChunk",
         "analysisCheckpoint", "analysisRevision",
     ]
 
@@ -241,7 +243,11 @@ public struct DeviceRegistryStore: Sendable {
             // history under an id nothing reads again: the orphaned-history failure this adoption exists
             // to PREVENT, displaced onto the computed half. The ring path never hit it because a ring has
             // no computed sibling to strand, which is why the shipped migration looked proven.
-            for (from, to) in [(activeId, serialId), (activeId + Self.computedSuffix, serialId + Self.computedSuffix)] {
+            let moves = [(activeId, serialId), (activeId + Self.computedSuffix, serialId + Self.computedSuffix)]
+            // Sealed hours merge row by row like everything else, so both sides come back to the hot
+            // tables first and the `rawChunk` re-key below finds nothing. The next seal pass packs them.
+            for id in moves.flatMap({ [$0.0, $0.1] }) { try RawColdTier.unsealDevice(db, deviceId: id) }
+            for (from, to) in moves {
                 for table in Self.deviceScopedTables {
                     try db.execute(sql: "UPDATE OR IGNORE \(table) SET deviceId = ? WHERE deviceId = ?", arguments: [to, from])
                     try db.execute(sql: "DELETE FROM \(table) WHERE deviceId = ?", arguments: [from])

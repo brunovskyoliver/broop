@@ -787,22 +787,35 @@ final class Repository: ObservableObject {
     private var storeOpenTask: Task<WhoopStore?, Never>?
 
     /// Trim and compact the store. Off the main actor by virtue of the store being its own actor.
-    func runStorageMaintenance(compact: Bool, shouldContinue: @escaping @Sendable () -> Bool = { true }) async {
-        guard let store = await ensureStore() else { return }
-        try? await store.runStorageMaintenance(now: Int(Date().timeIntervalSince1970), compact: compact,
-                                               shouldContinue: shouldContinue)
+    /// Returns what happened, for the strap log: a pass that threw used to look exactly like one that ran.
+    @discardableResult
+    func runStorageMaintenance(compact: Bool, shouldContinue: @escaping @Sendable () -> Bool = { true }) async -> String {
+        guard let store = await ensureStore() else { return "store unavailable" }
+        let start = Date()
+        do {
+            try await store.runStorageMaintenance(now: Int(start.timeIntervalSince1970), compact: compact,
+                                                  shouldContinue: shouldContinue)
+        } catch {
+            return "failed after \(Int(Date().timeIntervalSince(start))) s: \(error)"
+        }
+        let took = "\(Int(Date().timeIntervalSince(start))) s, compact=\(compact)"
+        // Only a finished pass counts as today's, so a failed or interrupted one is retried at the next open.
+        guard shouldContinue() else { return "stopped early after \(took)" }
         UserDefaults.standard.set(Date(), forKey: Self.lastStorageMaintenanceKey)
+        return "finished in \(took)"
     }
 
     /// Daily trim when the app opens. The one-off rebuild waits for a charger, here or in the background task.
-    func runStorageMaintenanceIfDue() async {
+    /// Nil when no pass was due.
+    func runStorageMaintenanceIfDue() async -> String? {
         let last = UserDefaults.standard.object(forKey: Self.lastStorageMaintenanceKey) as? Date
-        if let last, Date().timeIntervalSince(last) < 86_400 { return }
+        if let last, Date().timeIntervalSince(last) < 86_400 { return nil }
         UIDevice.current.isBatteryMonitoringEnabled = true
         let charging = [.charging, .full].contains(UIDevice.current.batteryState)
-        await runStorageMaintenance(compact: charging)
+        return await runStorageMaintenance(compact: charging)
     }
-    private static let lastStorageMaintenanceKey = "storage.lastMaintenanceAt"
+    /// Renamed when the stamp stopped being written by failed passes, so every install runs one pass after it.
+    private static let lastStorageMaintenanceKey = "storage.lastMaintenanceFinishedAt"
 
     private func ensureStore() async -> WhoopStore? {
         if let store { return store }

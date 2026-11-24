@@ -14,9 +14,13 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "6.29.3"),
     ],
     targets: [
+        // zlib for the cold-tier chunks (`RawChunkCodec`). A system library rather than Apple's
+        // Compression framework so the package still builds on Linux (`zlib1g-dev`).
+        .systemLibrary(name: "CZlib", providers: [.apt(["zlib1g-dev"])]),
         .target(
             name: "WhoopStore",
             dependencies: [
+                "CZlib",
                 "WhoopProtocol",
                 "OuraProtocol",
                 .product(name: "GRDB", package: "GRDB.swift"),
